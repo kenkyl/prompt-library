@@ -192,15 +192,18 @@ def scan_text(path: str, text: str, allow: List[AllowEntry],
 # git plumbing
 # --------------------------------------------------------------------------
 
-def _git(root: str, *args: str) -> str:
-    return subprocess.run(("git",) + args, cwd=root, check=True,
-                          stdout=subprocess.PIPE).stdout.decode("utf-8", "replace")
+class GitError(RuntimeError):
+    pass
 
 
 def _git_names(root: str, *args: str) -> List[str]:
-    raw = subprocess.run(("git",) + args + ("-z",), cwd=root, check=True,
-                         stdout=subprocess.PIPE).stdout
-    return [n.decode("utf-8", "replace") for n in raw.split(b"\0") if n]
+    r = subprocess.run(("git",) + args + ("-z",), cwd=root,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if r.returncode != 0:
+        raise GitError("git %s failed in %s: %s"
+                       % (" ".join(args), root,
+                          r.stderr.decode("utf-8", "replace").strip()))
+    return [n.decode("utf-8", "replace") for n in r.stdout.split(b"\0") if n]
 
 
 def _blob(root: str, ref: str) -> Optional[str]:
@@ -236,10 +239,33 @@ def scan_staged(root: str) -> List[Finding]:
     return findings
 
 
+def in_git_repo(root: str) -> bool:
+    r = subprocess.run(("git", "rev-parse", "--git-dir"), cwd=root,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return r.returncode == 0
+
+
+def _walk_names(root: str) -> List[str]:
+    """Filesystem fallback for when root is not a git repo (e.g. an export,
+    or a clone-in-progress). Honours the forbidden-path globs directly."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in (".git", "private", "inbox", "build",
+                                    "__pycache__", ".venv", "node_modules")]
+        for fn in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, fn), root)
+            out.append(rel.replace(os.sep, "/"))
+    return sorted(out)
+
+
 def scan_worktree(root: str) -> List[Finding]:
     allow, deny = load_allow(root), load_denylist(root)
-    names = _git_names(root, "ls-files", "--cached", "--others",
-                       "--exclude-standard")
+    if in_git_repo(root):
+        names = _git_names(root, "ls-files", "--cached", "--others",
+                           "--exclude-standard")
+    else:
+        names = _walk_names(root)
     findings: List[Finding] = []
     for name in names:
         full = os.path.join(root, name)
