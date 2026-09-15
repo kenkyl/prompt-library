@@ -1,0 +1,4 @@
+#!/bin/sh
+# The disclosure boundary. Scans every commit being pushed, so a
+# `git commit --no-verify` is still caught before anything leaves the machine.
+exec ./bin/prompt scan --push

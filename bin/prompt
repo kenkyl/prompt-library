@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""prompt -- the single interface to this prompt library.
+
+ALWAYS invoke as ./bin/prompt, never as `python3 bin/prompt`.
+~/.zshrc aliases python3 to a python3.11 that is not installed, so the latter
+fails with a confusing "command not found: python3.11". A shebang ignores
+shell aliases, so ./bin/prompt resolves correctly. `doctor` checks for this.
+
+Stdlib only, targeting Python 3.9 -- /usr/bin/python3 is 3.9.6 and has neither
+PyYAML nor tomllib. Do not "simplify" this by adding a dependency.
+"""
+
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from lib import patterns as P      # noqa: E402
+from lib import scan as S          # noqa: E402
+
+USAGE = """usage: ./bin/prompt <command> [options]
+
+  scan [--staged | --all | --push]   run the sanitization gate
+  doctor                             diagnose the environment, set up hooks
+  help                               this message
+
+Phase 0 of the build. list/show/check/build/install arrive in Phase 1.
+"""
+
+
+# --------------------------------------------------------------------------
+
+def cmd_scan(argv):
+    mode = argv[0] if argv else "--all"
+    if mode == "--staged":
+        return S.report(S.scan_staged(ROOT), "pre-commit scan")
+    if mode == "--push":
+        return S.report(S.scan_push(ROOT, sys.stdin.read().splitlines()),
+                        "pre-push scan")
+    if mode in ("--all", "--worktree"):
+        return S.report(S.scan_worktree(ROOT), "worktree scan")
+    sys.stderr.write("unknown scan mode %r (use --staged, --push, or --all)\n" % mode)
+    return 2
+
+
+def cmd_doctor(argv):
+    ok, warn, bad = [], [], []
+
+    def sh(*args):
+        import subprocess
+        r = subprocess.run(args, cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL)
+        return r.returncode, r.stdout.decode("utf-8", "replace").strip()
+
+    # 1. python
+    ok.append("interpreter: %s (%d.%d.%d)" % (sys.executable,
+              *sys.version_info[:3]))
+    if sys.version_info < (3, 9):
+        bad.append("Python %d.%d is older than the 3.9 floor this code targets."
+                   % sys.version_info[:2])
+
+    # 2. the zshrc alias landmine
+    zshrc = os.path.expanduser("~/.zshrc")
+    if os.path.exists(zshrc):
+        with open(zshrc, "r", encoding="utf-8", errors="replace") as fh:
+            body = fh.read()
+        if 'alias python3=' in body:
+            target = body.split('alias python3=', 1)[1].split("\n", 1)[0]
+            target = target.strip().strip('"').strip("'")
+            code, _ = sh("/bin/sh", "-c", "command -v %s" % target)
+            if code != 0:
+                warn.append(
+                    "~/.zshrc aliases python3 -> %s, which is NOT installed.\n"
+                    "      Harmless here (shebangs ignore aliases) but "
+                    "`python3 bin/prompt` will fail.\n"
+                    "      Always run ./bin/prompt." % target)
+
+    # 3. git hooks
+    code, hp = sh("git", "config", "--get", "core.hooksPath")
+    if hp == ".githooks":
+        ok.append("core.hooksPath = .githooks")
+    else:
+        if "--fix" in argv:
+            rc, _ = sh("git", "config", "core.hooksPath", ".githooks")
+            # Verify the write landed. Never report success on an unchecked
+            # subprocess -- a sandboxed or read-only .git/config fails here,
+            # and claiming the gate is active when it is not is the worst
+            # possible lie for this tool to tell.
+            _, now = sh("git", "config", "--get", "core.hooksPath")
+            if now == ".githooks":
+                ok.append("core.hooksPath set to .githooks")
+            else:
+                bad.append(
+                    "could not set core.hooksPath (git exit %d) -- the gate is "
+                    "NOT active.\n"
+                    "      .git/config may be read-only or sandboxed. Run by hand:\n"
+                    "        git config core.hooksPath .githooks" % rc)
+        else:
+            bad.append("core.hooksPath is %s -- the gate is NOT active.\n"
+                       "      Fix: ./bin/prompt doctor --fix"
+                       % (repr(hp) if hp else "unset"))
+    for hook in ("pre-commit", "pre-push"):
+        path = os.path.join(ROOT, ".githooks", hook)
+        if not os.path.exists(path):
+            bad.append(".githooks/%s is missing." % hook)
+        elif not os.access(path, os.X_OK):
+            if "--fix" in argv:
+                try:
+                    os.chmod(path, 0o755)
+                except OSError as e:
+                    bad.append("could not chmod .githooks/%s: %s" % (hook, e))
+                else:
+                    ok.append(".githooks/%s made executable" % hook)
+            else:
+                bad.append(".githooks/%s is not executable.\n"
+                           "      Fix: ./bin/prompt doctor --fix" % hook)
+        else:
+            ok.append(".githooks/%s present and executable" % hook)
+
+    # 4. containment -- gitignore is not enough on its own, `git add -f`
+    #    defeats it, which is why scan has an independent path guard.
+    for d in ("private", "inbox", "build"):
+        code, _ = sh("git", "check-ignore", "-q", d + "/")
+        (ok if code == 0 else bad).append(
+            "%s/ %s" % (d, "gitignored" if code == 0 else
+                        "IS NOT GITIGNORED -- add it to .gitignore now"))
+
+    # 5. config sanity
+    try:
+        allow = S.load_allow(ROOT)
+        ok.append("scan/allow.txt parses (%d entr%s)"
+                  % (len(allow), "y" if len(allow) == 1 else "ies"))
+    except ValueError as e:
+        bad.append(str(e))
+    try:
+        deny = S.load_denylist(ROOT)
+        if deny:
+            tiers = {}
+            for e in deny:
+                tiers[e.tier] = tiers.get(e.tier, 0) + 1
+            ok.append("private/denylist.txt parses (%s)"
+                      % ", ".join("%s %s" % (v, k) for k, v in sorted(tiers.items())))
+        else:
+            warn.append("private/denylist.txt absent -- pattern families are "
+                        "active, but no customer names are being checked.\n"
+                        "      Expected during Phase 0.")
+    except ValueError as e:
+        bad.append(str(e))
+
+    ok.append("%d pattern families loaded (%d blocking, %d review)"
+              % (len(P.PATTERNS),
+                 sum(1 for p in P.PATTERNS if p.severity == P.BLOCK),
+                 sum(1 for p in P.PATTERNS if p.severity == P.REVIEW)))
+
+    for line in ok:
+        print("  ok    %s" % line)
+    for line in warn:
+        print("  warn  %s" % line)
+    for line in bad:
+        print("  FAIL  %s" % line)
+    print("\ndoctor: %d ok, %d warning%s, %d failure%s"
+          % (len(ok), len(warn), "" if len(warn) == 1 else "s",
+             len(bad), "" if len(bad) == 1 else "s"))
+    return 1 if bad else 0
+
+
+COMMANDS = {"scan": cmd_scan, "doctor": cmd_doctor}
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    fn = COMMANDS.get(argv[0])
+    if fn is None:
+        sys.stderr.write("unknown command %r\n\n%s" % (argv[0], USAGE))
+        return 2
+    return fn(argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

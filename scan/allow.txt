@@ -1,0 +1,16 @@
+# False-positive overrides for the pattern families in lib/patterns.py.
+#
+#   path-glob | pattern-id | reason | YYYY-MM-DD
+#
+# Rules, all enforced by lib/scan.py:
+#   - Every field is mandatory. A malformed line is an error, not a skip.
+#   - pattern-id must exist in lib/patterns.py.
+#   - Entries are PATH-SCOPED. There is no global allow: a repo-wide
+#     suppression would defeat the gate for every prompt written later.
+#   - The reason is printed in scan output, so six months from now the
+#     justification is visible inline.
+#
+# This file CANNOT suppress denylist hits, only pattern families. An allow
+# entry naming a customer would publish the very term private/denylist.txt
+# exists to keep out of git. Resolve a denylist false positive by re-tiering
+# it in private/denylist.txt instead.
