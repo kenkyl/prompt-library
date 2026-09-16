@@ -387,9 +387,14 @@ def cmd_install(argv):
                                     pid + ".adopted.md")
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 if not dry:
-                    with open(tgt, "r", encoding="utf-8") as fh, \
-                            open(dest, "w", encoding="utf-8") as out:
-                        out.write(fh.read())
+                    try:
+                        with open(tgt, "r", encoding="utf-8") as fh, \
+                                open(dest, "w", encoding="utf-8") as out:
+                            out.write(fh.read())
+                    except OSError as exc:
+                        refused += 1
+                        print("  FAILED adopt %s: %s" % (tgt, exc))
+                        continue
                 print("  adopt %s -> %s" % (tgt, os.path.relpath(dest, ROOT)))
                 print("          now reconcile it into prompts/%s.md, then "
                       "re-run install" % pid)
@@ -397,9 +402,19 @@ def cmd_install(argv):
             if dry:
                 print("  would install %s -> %s (%s)" % (pid, tgt, state))
                 continue
-            os.makedirs(os.path.dirname(tgt), exist_ok=True)
-            with open(tgt, "w", encoding="utf-8") as fh:
-                fh.write(new)
+            try:
+                os.makedirs(os.path.dirname(tgt), exist_ok=True)
+                with open(tgt, "w", encoding="utf-8") as fh:
+                    fh.write(new)
+            except OSError as exc:
+                refused += 1
+                print("  FAILED %s -> %s" % (pid, tgt))
+                print("          %s" % exc)
+                print("          The built file is ready at %s --"
+                      % os.path.relpath(srcp, ROOT))
+                print("          copy it yourself if the permission problem "
+                      "is not fixable.")
+                continue
             installed += 1
             print("  ok    %s -> %s" % (pid, tgt))
 
@@ -512,6 +527,18 @@ def cmd_new(argv):
         sys.stderr.write("new takes exactly one id, e.g. ./bin/prompt new account-brief\n")
         return 2
     pid = ids[0]
+    # The id becomes a filename, a skill directory name, and a slash command,
+    # so constrain it here rather than discovering the problem three steps
+    # later. Leading underscores are reserved: _canonical_paths() skips them,
+    # which would make the new file invisible to list/check/build.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", pid):
+        sys.stderr.write(
+            "invalid id %r.\n"
+            "Use lowercase letters, digits and hyphens, starting with a letter "
+            "or digit\n(2-64 chars). The id becomes the filename, the skill "
+            "directory, and the\nslash command, so it has to be safe in all "
+            "three.\n" % pid)
+        return 2
     path = os.path.join(ROOT, "prompts", pid + ".md")
     if os.path.exists(path):
         sys.stderr.write("%s already exists\n" % os.path.relpath(path, ROOT))
