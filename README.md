@@ -64,6 +64,62 @@ Syntax is `{{NAME}}`, uppercase only. `{{{{` escapes to a literal `{{`.
 `$ARGUMENTS` and `$1` are reserved — the compiler emits those; declare a var
 with `from-arg:` instead.
 
+### Optional sections
+
+A variable declared without `required: true` resolves to empty when nothing
+supplies it. Wrap a whole section in a guard and it disappears cleanly —
+heading and all — rather than leaving an empty stub:
+
+```markdown
+{{#IF_PRICING_REFERENCE}}
+## 13. Pricing and commercial reference
+
+{{PRICING_REFERENCE}}
+{{/IF_PRICING_REFERENCE}}
+```
+
+Both tags must sit alone on their own lines. There is no `else`, no
+expressions, and no nesting — one construct, deliberately. Put an optional
+section **last** so the section numbering stays contiguous whether or not it
+renders.
+
+`check` verifies every guard is balanced, that it names a declared variable,
+and warns if it guards a `required: true` variable (that block could never be
+dropped).
+
+### Adding a price book, or any other company-specific reference
+
+`customer-account-intelligence` ships with an optional `PRICING_REFERENCE`
+variable as the worked example of this pattern. It is unset by default, so the
+prompt carries no commercial data at all until you opt in.
+
+To add one:
+
+1. Write your real figures to `private/fragments/pricing-reference.md` —
+   gitignored, never committed.
+2. Uncomment the pointer in `private/env/customer-account-intelligence.env`:
+   `PRICING_REFERENCE=@../fragments/pricing-reference.md`
+3. `./bin/prompt build customer-account-intelligence --var CUSTOMER_NAME="..."`
+
+`env/fragments/pricing-reference.example.md` is the committed template showing
+the expected shape: list pricing and units, packaging and commit tiers,
+professional-services thresholds, discount authority, marketplace and partner
+economics, and an explicit instruction on what to do when a figure is missing.
+Every placeholder in it is written `<like-this>` with **no digits and no
+currency symbols**, specifically so the money patterns stay armed on that
+path — if a real figure ever lands there by accident, the commit is blocked
+rather than suppressed by an allow rule.
+
+Keep such a section short and current. A wrong number is worse than no number,
+which is why the section text tells the assistant to name the figure it needs
+rather than interpolate or recall one.
+
+The same pattern works for anything else that is company-specific and
+sensitive: a competitive battlecard, a partner matrix, a support-escalation
+ladder, or an internal naming decoder. Declare an optional `private: true`
+variable, guard a section with it, and commit an example fragment showing the
+shape.
+
 A variable marked `private: true` never has its value written into a committed
 file. Its real value lives in `private/`, and a committed
 `env/fragments/*.example.md` shows the expected shape so the template is

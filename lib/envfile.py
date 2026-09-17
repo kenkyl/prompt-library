@@ -144,6 +144,15 @@ def resolve(root: str, prompt_id: str, meta: dict,
         values[k] = val
         origin[k] = (override_origins or {}).get(k, "--var")
 
+    # An optional variable with nothing behind it resolves to empty rather
+    # than being left as a literal {{TOKEN}} in the output. This is what makes
+    # an optional section guarded by {{#IF_X}} disappear cleanly when the user
+    # has not supplied it.
+    for v in decls:
+        if not v.get("required") and v["name"] not in values:
+            values[v["name"]] = ""
+            origin.setdefault(v["name"], "unset (optional)")
+
     missing = [v["name"] for v in decls
                if v.get("required") and not str(values.get(v["name"], "")).strip()]
     return Resolved(values, origin, missing)

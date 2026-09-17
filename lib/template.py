@@ -37,6 +37,30 @@ BLOCK_LINE_RX = re.compile(r"^([ \t]*)\{\{(" + NAME + r")\}\}[ \t]*$")
 # Reserved because the compiler emits them into the skill surface.
 RESERVED_RX = re.compile(r"\$ARGUMENTS(?:\[\d+\])?|\$[0-9]\b")
 
+# The ONE conditional construct. No else, no expressions, no nesting.
+# Deferred until a prompt genuinely needed it: an optional section has to
+# disappear cleanly when unset rather than leave a dangling heading behind.
+# Anything more than this starts becoming a templating language -- don't.
+#
+# Leading whitespace and the newline after each tag are consumed so a dropped
+# block leaves no blank gap and a kept block does not gain one.
+# Block style ONLY: each tag must sit alone on its own line. An inline
+# conditional would have to guess whether to keep the line's newline, and
+# guessing wrong silently mangles the output. A section guard never needs it.
+COND_RX = re.compile(
+    r"(?:\A|(?<=\n))[ \t]*\{\{#IF_(" + NAME + r")\}\}[ \t]*\n"
+    r"(.*?)"
+    r"[ \t]*\{\{/IF_\1\}\}[ \t]*(?:\n|\Z)",
+    re.DOTALL)
+
+# Marks a removed block so the blank line it leaves behind can be collapsed
+# without touching unrelated blank runs (which may be inside a code fence).
+_DROPPED = "\x00PL_DROPPED\x00"
+
+# Used to spot an opener with no matching closer.
+COND_OPEN_RX = re.compile(r"\{\{#IF_(" + NAME + r")\}\}")
+COND_CLOSE_RX = re.compile(r"\{\{/IF_(" + NAME + r")\}\}")
+
 _ESCAPE_SENTINEL = "\x00PL_OPEN\x00"
 
 
@@ -50,12 +74,41 @@ def _lineno(text: str, offset: int) -> int:
 
 
 def tokens(body: str) -> List[str]:
-    """Distinct variable names referenced by the body, in first-seen order."""
+    """Distinct variable names referenced by the body, in first-seen order.
+
+    Includes names referenced only by a {{#IF_X}} guard -- those are a real
+    use, and treating them otherwise would make `check` report a declared
+    variable as unused.
+    """
+    src = body.replace("{{{{", _ESCAPE_SENTINEL)
     seen, out = set(), []
-    for m in TOKEN_RX.finditer(body.replace("{{{{", _ESCAPE_SENTINEL)):
+    for m in re.finditer(r"\{\{(?:#IF_|/IF_)?(" + NAME + r")\}\}", src):
         if m.group(1) not in seen:
             seen.add(m.group(1))
             out.append(m.group(1))
+    return out
+
+
+def conditionals(body: str) -> List[str]:
+    """Distinct variable names used as {{#IF_X}} guards."""
+    src = body.replace("{{{{", _ESCAPE_SENTINEL)
+    return sorted(set(m.group(1) for m in COND_OPEN_RX.finditer(src)))
+
+
+def unbalanced_conditionals(body: str) -> List[Hit]:
+    """Openers without a matching closer, and vice versa."""
+    src = body.replace("{{{{", _ESCAPE_SENTINEL)
+    opens = [(m.group(1), _lineno(src, m.start())) for m in COND_OPEN_RX.finditer(src)]
+    closes = [(m.group(1), _lineno(src, m.start())) for m in COND_CLOSE_RX.finditer(src)]
+    out = []
+    close_names = [n for n, _ in closes]
+    open_names = [n for n, _ in opens]
+    for name, line in opens:
+        if close_names.count(name) != open_names.count(name):
+            out.append(Hit("{{#IF_%s}} has no matching {{/IF_%s}}" % (name, name), line))
+    for name, line in closes:
+        if name not in open_names:
+            out.append(Hit("{{/IF_%s}} has no matching {{#IF_%s}}" % (name, name), line))
     return out
 
 
@@ -75,8 +128,11 @@ def near_misses(body: str) -> List[Hit]:
     src = body.replace("{{{{", _ESCAPE_SENTINEL)
     out = []
     for m in SHAPED_RX.finditer(src):
-        if not TOKEN_RX.fullmatch(m.group(0)):
-            out.append(Hit(m.group(0), _lineno(src, m.start())))
+        tag = m.group(0)
+        if TOKEN_RX.fullmatch(tag) or COND_OPEN_RX.fullmatch(tag) \
+                or COND_CLOSE_RX.fullmatch(tag):
+            continue
+        out.append(Hit(tag, _lineno(src, m.start())))
     return out
 
 
@@ -114,6 +170,18 @@ def render(body: str, values: Dict[str, str]) -> Tuple[str, List[str]]:
     """
     src = body.replace("{{{{", _ESCAPE_SENTINEL)
     missing = set()
+
+    # Conditionals first: a block whose guard is empty is removed entirely,
+    # so any {{VAR}} inside it is not reported as unresolved.
+    def _cond(m):
+        guard = str(values.get(m.group(1), "")).strip()
+        return m.group(2) if guard else _DROPPED
+
+    prev = None
+    while prev != src:
+        prev = src
+        src = COND_RX.sub(_cond, src)
+    src = re.sub(r"[ \t]*" + _DROPPED + r"\n?", "", src)
 
     out_lines = []
     for line in src.split("\n"):

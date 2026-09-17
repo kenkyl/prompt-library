@@ -35,6 +35,15 @@ vars:
       framework, artifact chain, and role boundaries. Internal IP; the real
       value lives in the private overlay, never in this repo.
     example-file: env/fragments/sales-methodology.example.md
+  - name: PRICING_REFERENCE
+    multiline: true
+    private: true
+    describe: Optional. Company-specific pricing, rate card, packaging tiers,
+      discount authority, or professional-services thresholds. Leave it unset and
+      the entire pricing section disappears from the rendered prompt. Never commit
+      real figures -- keep them in private/ and point at the file with
+      PRICING_REFERENCE=@../fragments/pricing-reference.md
+    example-file: env/fragments/pricing-reference.example.md
   - name: METHODOLOGY_DELIVERABLES
     required: true
     multiline: true
@@ -303,3 +312,18 @@ Be ready to produce, end to end:
   stage exit criteria defined in the methodology section are unmet. Say what's missing.
 - Commit {{COMPANY}} to roadmap, timelines, pricing, or contractual terms. Frame those as
   requiring the account team, product, or deal desk to confirm.
+
+{{#IF_PRICING_REFERENCE}}
+## 13. Pricing and commercial reference
+
+Optional, and present only when I have supplied it. Treat everything in this section as
+internal and authoritative for commercial framing. Never restate a figure from it in
+customer-facing output unless I explicitly approve that figure.
+
+{{PRICING_REFERENCE}}
+
+If a question needs a price, rate, discount, threshold, or packaging detail that is not
+in this section, say so and name what you would need. Never infer a figure, interpolate
+between figures, or recall one from training data -- a wrong number here is worse than
+no number.
+{{/IF_PRICING_REFERENCE}}

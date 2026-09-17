@@ -249,6 +249,19 @@ def cmd_check(argv):
             err("`vars:` declares %s but the body never uses {{%s}} "
                 "(renamed it?)" % (name, name))
 
+        for hit in T.unbalanced_conditionals(body):
+            err("line %d: %s" % (hit.line, hit.text))
+        for name in T.conditionals(body):
+            if name not in declared:
+                err("{{#IF_%s}} guards an undeclared variable -- add %s to "
+                    "`vars:`" % (name, name))
+            else:
+                d = next((x for x in decls if x["name"] == name), {})
+                if d.get("required"):
+                    warns.append(
+                        "%s: {{#IF_%s}} guards a variable marked `required: "
+                        "true`, so the block can never be dropped. Make it "
+                        "optional or drop the guard." % (rel, name))
         for hit in T.reserved(body):
             err("line %d: %s is reserved -- the compiler emits it. Declare a "
                 "var with `from-arg:` instead" % (hit.line, hit.text))
