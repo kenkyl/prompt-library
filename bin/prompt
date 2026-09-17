@@ -110,6 +110,25 @@ def _parse_vars(argv):
     return out
 
 
+def _arg_overrides(meta, positional):
+    """Map positional CLI args onto vars declared with `from-arg:`.
+
+    `arguments:` order is also the order the skill surface uses for $1, $2,
+    so one ordering serves both surfaces.
+    """
+    args = meta.get("arguments") or []
+    if isinstance(args, str):
+        args = args.split()
+    out = {}
+    for i, argname in enumerate(args):
+        if i >= len(positional):
+            break
+        for v in E.declared_vars(meta):
+            if str(v.get("from-arg")) == str(argname):
+                out.setdefault(v["name"], positional[i])
+    return out
+
+
 def _skill_roots(meta):
     roots = [os.path.expanduser("~/.claude/skills")]
     if meta.get("scheduled"):
@@ -432,21 +451,11 @@ def cmd_fill(argv):
         return 2
     pid = ids[0]
     meta, body, rel = _load(pid)
-    overrides = _parse_vars(argv)
-
-    # Positional args map onto `arguments:` order, which is also the order
-    # the skill surface uses for $1, $2, ...
-    args = meta.get("arguments") or []
-    if isinstance(args, str):
-        args = args.split()
-    positional = _positional(argv)[1:]
-    for i, argname in enumerate(args):
-        if i < len(positional):
-            for v in E.declared_vars(meta):
-                if str(v.get("from-arg")) == str(argname):
-                    overrides.setdefault(v["name"], positional[i])
-
-    r = E.resolve(ROOT, pid, meta, overrides)
+    from_args = _arg_overrides(meta, _positional(argv)[1:])
+    overrides = dict(from_args)
+    overrides.update(_parse_vars(argv))
+    r = E.resolve(ROOT, pid, meta, overrides,
+                  override_origins={k: "command line" for k in from_args})
     text, missing = T.render(body, r.values)
     if missing:
         sys.stderr.write("unresolved: %s\nSet them in private/env/%s.env or "
@@ -477,25 +486,61 @@ def cmd_fill(argv):
 
 
 def cmd_env(argv):
-    ids = _ids_from(argv)
-    if len(ids) != 1:
-        sys.stderr.write("env takes exactly one id\n")
+    ids = _positional(argv)
+    if not ids:
+        sys.stderr.write("env needs an id\n")
         return 2
     pid = ids[0]
     meta, body, _ = _load(pid)
-    r = E.resolve(ROOT, pid, meta, _parse_vars(argv))
-    print("%-24s %-28s %s" % ("variable", "value came from", "state"))
-    print("%-24s %-28s %s" % ("-" * 24, "-" * 28, "-" * 5))
+    from_args = _arg_overrides(meta, ids[1:])
+    overrides = dict(from_args)
+    overrides.update(_parse_vars(argv))
+    r = E.resolve(ROOT, pid, meta, overrides,
+                  override_origins={k: "command line" for k in from_args})
+
+    unresolvable = []
+    rows = []
     for v in E.declared_vars(meta):
         n = v["name"]
         have = str(r.values.get(n, ""))
-        state = "set (%d chars)" % len(have) if have.strip() else (
-            "MISSING (required)" if v.get("required") else "empty (optional)")
-        print("%-24s %-28s %s" % (n, r.origin.get(n, "-"), state))
+        if have.strip():
+            state = "set (%d chars)" % len(have)
+        elif v.get("from-arg"):
+            # Not missing -- supplied per use. Naming it MISSING implies
+            # something is broken when nothing is.
+            state = "per-invocation (pass it as $%s)" % v["from-arg"]
+        elif v.get("required"):
+            state = "MISSING (required)"
+            unresolvable.append(n)
+        else:
+            state = "empty (optional)"
+        # The .env filename repeats the prompt id, which is already known
+        # from the command line -- drop it so the column stays narrow.
+        origin = r.origin.get(n, "-")
+        if origin.endswith(pid + ".env"):
+            origin = origin[:-(len(pid) + 4)] + "<id>.env"
+        rows.append((n, origin, state, have))
+
+    hdr = ("variable", "value came from", "state")
+    w0 = max([len(hdr[0])] + [len(x[0]) for x in rows])
+    w1 = max([len(hdr[1])] + [len(x[1]) for x in rows])
+    print("%-*s  %-*s  %s" % (w0, hdr[0], w1, hdr[1], hdr[2]))
+    print("%-*s  %-*s  %s" % (w0, "-" * w0, w1, "-" * w1, "-" * len(hdr[2])))
+    for n, origin, state, have in rows:
+        print("%-*s  %-*s  %s" % (w0, n, w1, origin, state))
         if "--resolved" in argv and have.strip():
-            preview = have if len(have) <= 68 else have[:65] + "..."
-            print("%-24s   %s" % ("", preview.replace("\n", "\\n")))
-    return 1 if r.missing else 0
+            flat = have.replace("\n", " ").strip()
+            limit = 76 - w0
+            preview = flat if len(flat) <= limit else flat[:limit - 3] + "..."
+            print("%-*s  %s" % (w0, "", preview))
+
+    argnames = [v["from-arg"] for v in E.declared_vars(meta)
+                if v.get("from-arg") and not str(r.values.get(v["name"], "")).strip()]
+    if argnames:
+        print("\nPer-invocation values are not stored. To see this filled in:")
+        print("  ./bin/prompt env %s %s"
+              % (pid, " ".join("'<%s>'" % a for a in argnames)))
+    return 1 if unresolvable else 0
 
 
 def cmd_init(argv):

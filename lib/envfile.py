@@ -107,7 +107,8 @@ def declared_vars(meta: dict) -> List[dict]:
 
 def resolve(root: str, prompt_id: str, meta: dict,
             overrides: Optional[Dict[str, str]] = None,
-            use_examples: bool = False) -> Resolved:
+            use_examples: bool = False,
+            override_origins: Optional[Dict[str, str]] = None) -> Resolved:
     """Resolve every declared variable. `use_examples` substitutes `example:`
     values instead of real ones -- that is what makes `check` able to smoke-test
     a render on a fresh clone with no private/ directory present."""
@@ -141,7 +142,7 @@ def resolve(root: str, prompt_id: str, meta: dict,
 
     for k, val in (overrides or {}).items():
         values[k] = val
-        origin[k] = "--var"
+        origin[k] = (override_origins or {}).get(k, "--var")
 
     missing = [v["name"] for v in decls
                if v.get("required") and not str(values.get(v["name"], "")).strip()]
