@@ -206,8 +206,8 @@ def cmd_check(argv):
     # House headings, matched loosely: numbered variants like "## 1. Role" and
     # "## 7. Output standards" are the same thing as "## Role" / "## Output
     # contract". Lifted from the existing corpus rather than imposed on it.
-    HOUSE = ((r"^#+\s*(?:\d+\.\s*)?Role\b", "a Role section"),
-             (r"^#+\s*(?:\d+\.\s*)?Output\b", "an Output section"))
+    HOUSE = ((r"^#+\s*(?:\d+\.\s*)?Role\b", "Role section"),
+             (r"^(?:#+\s*(?:\d+\.\s*)?Output\b|FORMAT\b)", "Output section or FORMAT block"))
 
     for pid in _ids_from(argv):
         meta, body, rel = _load(pid)
@@ -279,7 +279,16 @@ def cmd_check(argv):
         _, unresolved = T.render(body, r.values)
         for name in unresolved:
             d = next((x for x in decls if x["name"] == name), {})
-            if d.get("required"):
+            if not d.get("required"):
+                continue
+            ref = d.get("example-file")
+            if ref and not os.path.exists(os.path.join(ROOT, str(ref))):
+                err("{{%s}} declares `example-file: %s` but that file does not "
+                    "exist" % (name, ref))
+            elif ref:
+                err("{{%s}} has `example-file: %s`, which exists but resolved "
+                    "empty" % (name, ref))
+            else:
                 err("{{%s}} has neither `example:` nor `example-file:`, so a "
                     "fresh clone cannot smoke-test this prompt" % name)
 

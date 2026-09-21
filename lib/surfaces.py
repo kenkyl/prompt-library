@@ -71,7 +71,7 @@ def _reference_pointer(meta: dict) -> str:
     ref = meta.get("reference")
     if not ref:
         return ""
-    return ("Reference the project knowledge file `%s` for all queries, field "
+    return ("Reference the project knowledge file `%s` for all queries, field\n"
             "mappings and rules. Do not re-derive them.\n\n" % ref)
 
 
@@ -84,7 +84,7 @@ def emit_skill(meta: dict, body: str, values: Dict[str, str],
                 "disable-model-invocation", "user-invocable"):
         if meta.get(key) is not None:
             fmatter[key] = meta[key]
-    rendered, missing = T.render(_reference_pointer(meta) + body,
+    rendered, missing = T.render(_reference_pointer(meta) + body.lstrip("\n"),
                                 skill_values(meta, values))
     return FM.emit(fmatter) + "\n" + rendered.lstrip("\n"), missing
 
