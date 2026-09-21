@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fast feedback on staged blob content. See lib/scan.py.
+# Bypassable with --no-verify -- pre-push is the real boundary.
+exec ./bin/prompt scan --staged
