@@ -1,2 +1,17 @@
+# Never commit: real values, secrets, customer denylist
+private/
+
+# Never commit: staging area and raw exports (may contain anything)
+inbox/
+*.enex
+
+# Never commit: derived artifacts. Rendered output contains private overlay
+# values by design, so gitignoring all build output makes "committed files
+# never contain overlay content" a property of the layout, not a flag.
+build/
+
+# Local scratch
 .DS_Store
 *-forecast-*
+__pycache__/
+*.pyc

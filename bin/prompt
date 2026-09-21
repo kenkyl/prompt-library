@@ -1,0 +1,794 @@
+#!/usr/bin/env python3
+"""prompt -- the single interface to this prompt library.
+
+ALWAYS invoke as ./bin/prompt, never as `python3 bin/prompt`.
+~/.zshrc aliases python3 to a python3.11 that is not installed, so the latter
+fails with a confusing "command not found: python3.11". A shebang ignores
+shell aliases, so ./bin/prompt resolves correctly. `doctor` checks for this.
+
+Stdlib only, targeting Python 3.9 -- /usr/bin/python3 is 3.9.6 and has neither
+PyYAML nor tomllib. Do not "simplify" this by adding a dependency.
+"""
+
+import os
+import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from lib import envfile as E       # noqa: E402
+from lib import frontmatter as FM  # noqa: E402
+from lib import patterns as P      # noqa: E402
+from lib import scan as S          # noqa: E402
+from lib import surfaces as SF     # noqa: E402
+from lib import template as T      # noqa: E402
+
+USAGE = """usage: ./bin/prompt <command> [options]
+
+  list                               every canonical prompt, with install state
+  show <id> [--rendered]             the canonical file, or fully substituted
+  check [<id>...]                    validate + smoke-render + scan. Exit 1 on error
+  build [<id>...]                    compile to build/, regenerate env/*.env.example
+  install [<id>...] [--force|--adopt|--dry-run]
+                                     build, then copy into ~/.claude/skills/
+  fill <id> [ARG...] [--var K=V] [--stdout]
+                                     substitute everything, copy to the clipboard
+  env <id> [--resolved]              which layer supplied each variable
+  init                               fresh clone: env/*.example -> private/env/
+  new <id>                           scaffold a canonical file
+  scan [--staged | --all | --push]   run the sanitization gate
+  doctor [--fix]                     diagnose the environment, set up hooks
+
+Always ./bin/prompt, never `python3 bin/prompt` -- see the note at the top of
+this file.
+"""
+
+CANON_DIRS = ("prompts", "references")
+
+
+# --------------------------------------------------------------------------
+# loading
+# --------------------------------------------------------------------------
+
+def _canonical_paths():
+    out = []
+    for d in CANON_DIRS:
+        full = os.path.join(ROOT, d)
+        if not os.path.isdir(full):
+            continue
+        for fn in sorted(os.listdir(full)):
+            if fn.endswith(".md") and not fn.startswith("_"):
+                out.append((fn[:-3], os.path.join(d, fn)))
+    return out
+
+
+def _load(pid):
+    """Return (meta, body, relpath). Raises SystemExit with a clear message."""
+    for cid, rel in _canonical_paths():
+        if cid == pid:
+            with open(os.path.join(ROOT, rel), "r", encoding="utf-8") as fh:
+                text = fh.read()
+            try:
+                meta, body, _ = FM.parse(text)
+            except FM.FrontmatterError as exc:
+                raise SystemExit("%s: %s" % (rel, exc))
+            return meta, body, rel
+    known = ", ".join(c for c, _ in _canonical_paths()) or "(none yet)"
+    raise SystemExit("no canonical prompt with id %r.\nKnown ids: %s" % (pid, known))
+
+
+# Flags that consume the argument after them, so it is not mistaken for an id.
+_VALUE_FLAGS = ("--var",)
+
+
+def _positional(argv):
+    out, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a in _VALUE_FLAGS:
+            skip = True
+            continue
+        if a.startswith("-"):
+            continue
+        out.append(a)
+    return out
+
+
+def _ids_from(argv):
+    return _positional(argv) or [c for c, _ in _canonical_paths()]
+
+
+def _parse_vars(argv):
+    out = {}
+    for i, a in enumerate(argv):
+        if a == "--var" and i + 1 < len(argv) and "=" in argv[i + 1]:
+            k, v = argv[i + 1].split("=", 1)
+            out[k.strip()] = v
+    return out
+
+
+def _arg_overrides(meta, positional):
+    """Map positional CLI args onto vars declared with `from-arg:`.
+
+    `arguments:` order is also the order the skill surface uses for $1, $2,
+    so one ordering serves both surfaces.
+    """
+    args = meta.get("arguments") or []
+    if isinstance(args, str):
+        args = args.split()
+    out = {}
+    for i, argname in enumerate(args):
+        if i >= len(positional):
+            break
+        for v in E.declared_vars(meta):
+            if str(v.get("from-arg")) == str(argname):
+                out.setdefault(v["name"], positional[i])
+    return out
+
+
+def _skill_roots(meta):
+    roots = [os.path.expanduser("~/.claude/skills")]
+    if meta.get("scheduled"):
+        roots.append(os.path.expanduser("~/Claude/Scheduled"))
+    return roots
+
+
+# --------------------------------------------------------------------------
+# verbs
+# --------------------------------------------------------------------------
+
+def cmd_list(argv):
+    rows = []
+    for pid, rel in _canonical_paths():
+        try:
+            meta, body, _ = _load(pid)
+        except SystemExit as exc:
+            rows.append((pid, "?", "PARSE ERROR", "", "", str(exc)[:40]))
+            continue
+        surfaces = meta.get("surfaces") or []
+        if isinstance(surfaces, str):
+            surfaces = [surfaces]
+        installed = []
+        for root in _skill_roots(meta):
+            tgt = os.path.join(root, pid, "SKILL.md")
+            if os.path.exists(tgt):
+                with open(tgt, "r", encoding="utf-8") as fh:
+                    cur = fh.read()
+                mk = SF.read_marker(cur)
+                if mk is None:
+                    installed.append("foreign")
+                elif mk.group("sha") == SF.content_sha(cur):
+                    installed.append("managed")
+                else:
+                    installed.append("HAND-EDITED")
+        rows.append((pid, meta.get("kind") or "prompt",
+                     meta.get("status") or "-", ",".join(surfaces),
+                     str(len(E.declared_vars(meta))),
+                     ",".join(installed) or "-"))
+    if not rows:
+        print("No canonical prompts yet. Scaffold one: ./bin/prompt new <id>")
+        return 0
+    w = [max(len(r[i]) for r in rows + [("id", "kind", "status", "surfaces",
+                                         "vars", "installed")])
+         for i in range(6)]
+    hdr = ("id", "kind", "status", "surfaces", "vars", "installed")
+    print("  ".join(h.ljust(w[i]) for i, h in enumerate(hdr)))
+    print("  ".join("-" * w[i] for i in range(6)))
+    for r in rows:
+        print("  ".join(str(r[i]).ljust(w[i]) for i in range(6)))
+    return 0
+
+
+def cmd_show(argv):
+    ids = _ids_from(argv)
+    if len(ids) != 1:
+        sys.stderr.write("show takes exactly one id\n")
+        return 2
+    meta, body, rel = _load(ids[0])
+    if "--rendered" not in argv:
+        with open(os.path.join(ROOT, rel), "r", encoding="utf-8") as fh:
+            sys.stdout.write(fh.read())
+        return 0
+    r = E.resolve(ROOT, ids[0], meta, _parse_vars(argv))
+    text, missing = T.render(body, r.values)
+    sys.stdout.write(text)
+    if missing:
+        sys.stderr.write("\nunresolved: %s\n" % ", ".join(missing))
+        return 1
+    return 0
+
+
+def cmd_check(argv):
+    errors, warns, infos = [], [], []
+    # House headings, matched loosely: numbered variants like "## 1. Role" and
+    # "## 7. Output standards" are the same thing as "## Role" / "## Output
+    # contract". Lifted from the existing corpus rather than imposed on it.
+    HOUSE = ((r"^#+\s*(?:\d+\.\s*)?Role\b", "a Role section"),
+             (r"^#+\s*(?:\d+\.\s*)?Output\b", "an Output section"))
+
+    for pid in _ids_from(argv):
+        meta, body, rel = _load(pid)
+
+        def err(msg):
+            errors.append("%s: %s" % (rel, msg))
+
+        if meta.get("id") != pid:
+            err("frontmatter id is %r but the filename says %r"
+                % (meta.get("id"), pid))
+        if not str(meta.get("description") or "").strip():
+            err("`description:` is required -- it is what makes Claude "
+                "auto-invoke the skill correctly")
+        elif len(str(meta["description"])) > 1400:
+            warns.append("%s: description is %d chars; Claude Code caps "
+                         "description+when_to_use at 1536"
+                         % (rel, len(str(meta["description"]))))
+        kind = meta.get("kind") or "prompt"
+        if kind not in ("prompt", "reference"):
+            err("kind must be prompt or reference, got %r" % kind)
+        surfaces = meta.get("surfaces") or []
+        if isinstance(surfaces, str):
+            surfaces = [surfaces]
+        for s in surfaces:
+            if s not in SF.SURFACES:
+                err("unknown surface %r (valid: %s)" % (s, ", ".join(SF.SURFACES)))
+
+        # The set comparison that makes frontmatter-as-contract worth it.
+        try:
+            decls = E.declared_vars(meta)
+        except E.EnvError as exc:
+            err(str(exc))
+            decls = []
+        declared = set(d["name"] for d in decls)
+        used = set(T.tokens(body))
+        for name in sorted(used - declared):
+            err("body uses {{%s}} but it is not declared under `vars:`" % name)
+        for name in sorted(declared - used):
+            err("`vars:` declares %s but the body never uses {{%s}} "
+                "(renamed it?)" % (name, name))
+
+        for hit in T.unbalanced_conditionals(body):
+            err("line %d: %s" % (hit.line, hit.text))
+        for name in T.conditionals(body):
+            if name not in declared:
+                err("{{#IF_%s}} guards an undeclared variable -- add %s to "
+                    "`vars:`" % (name, name))
+            else:
+                d = next((x for x in decls if x["name"] == name), {})
+                if d.get("required"):
+                    warns.append(
+                        "%s: {{#IF_%s}} guards a variable marked `required: "
+                        "true`, so the block can never be dropped. Make it "
+                        "optional or drop the guard." % (rel, name))
+        for hit in T.reserved(body):
+            err("line %d: %s is reserved -- the compiler emits it. Declare a "
+                "var with `from-arg:` instead" % (hit.line, hit.text))
+        for hit in T.near_misses(body):
+            infos.append("%s:%d: %s does not match the strict {{NAME}} grammar "
+                         "and will render literally" % (rel, hit.line, hit.text))
+        if kind == "prompt":
+            for rx, label in HOUSE:
+                if not re.search(rx, body, re.MULTILINE):
+                    warns.append("%s: no %s (house style)" % (rel, label))
+
+        # Smoke-render against example values only, so this passes on a
+        # fresh clone with no private/ directory.
+        r = E.resolve(ROOT, pid, meta, use_examples=True)
+        _, unresolved = T.render(body, r.values)
+        for name in unresolved:
+            d = next((x for x in decls if x["name"] == name), {})
+            if d.get("required"):
+                err("{{%s}} has neither `example:` nor `example-file:`, so a "
+                    "fresh clone cannot smoke-test this prompt" % name)
+
+    for line in infos:
+        print("  info  %s" % line)
+    for line in warns:
+        print("  warn  %s" % line)
+    for line in errors:
+        print("  FAIL  %s" % line)
+    print("check: %d error%s, %d warning%s, %d info"
+          % (len(errors), "" if len(errors) == 1 else "s",
+             len(warns), "" if len(warns) == 1 else "s", len(infos)))
+    if errors:
+        return 1
+    return S.report(S.scan_worktree(ROOT), "worktree scan")
+
+
+def cmd_build(argv):
+    rc = cmd_check(_positional(argv))
+    if rc:
+        print("\nbuild aborted: fix check first.")
+        return rc
+    wrote = []
+    for pid in _ids_from(argv):
+        meta, body, rel = _load(pid)
+        surfaces = meta.get("surfaces") or ["skill"]
+        if isinstance(surfaces, str):
+            surfaces = [surfaces]
+        r = E.resolve(ROOT, pid, meta, _parse_vars(argv))
+        # A `from-arg` var is fine to leave unset when every emitted surface
+        # is `skill`, because there it compiles to $argname and the value
+        # arrives at invocation. The instructions/knowledge surfaces have no
+        # argument channel, so there the value must be baked in at build time.
+        needs_baked = any(s not in ("skill", "cli") for s in surfaces)
+        blocking = []
+        for name in r.missing:
+            d = next((x for x in E.declared_vars(meta) if x["name"] == name), {})
+            if d.get("from-arg") and not needs_baked:
+                continue
+            blocking.append((name, d))
+        if blocking:
+            for name, d in blocking:
+                print("  FAIL  %s: {{%s}} is required and unset." % (rel, name))
+                if d.get("describe"):
+                    print("          %s" % d["describe"])
+                if d.get("from-arg"):
+                    print("          Supplied per-use, and the %s surface has no "
+                          "argument channel, so pass it now:"
+                          % ", ".join(s for s in surfaces
+                                      if s not in ("skill", "cli")))
+                    print("            ./bin/prompt build %s --var %s='...'"
+                          % (pid, name))
+                    print("          Or render one straight to the clipboard:")
+                    print("            ./bin/prompt fill %s '<%s>'"
+                          % (pid, str(d.get("from-arg"))))
+                else:
+                    print("          Set it in private/env/%s.env" % pid)
+            return 1
+        for surface in surfaces:
+            if surface == "cli":
+                continue
+            text, missing = SF.EMITTERS[surface](meta, body, r.values, pid)
+            if missing:
+                print("  FAIL  %s/%s: unresolved %s"
+                      % (surface, pid, ", ".join(missing)))
+                return 1
+            if surface == "skill":
+                out = os.path.join(ROOT, "build", "skills", pid, "SKILL.md")
+            else:
+                out = os.path.join(ROOT, "build", surface, pid + ".md")
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write(SF.add_marker(text, pid, surface))
+            wrote.append(os.path.relpath(out, ROOT))
+        ex = os.path.join(ROOT, "env", pid + ".env.example")
+        os.makedirs(os.path.dirname(ex), exist_ok=True)
+        with open(ex, "w", encoding="utf-8") as fh:
+            fh.write(E.generate_example(pid, meta))
+        wrote.append(os.path.relpath(ex, ROOT))
+    for w in wrote:
+        print("  wrote %s" % w)
+    print("build: %d file%s" % (len(wrote), "" if len(wrote) == 1 else "s"))
+    return 0
+
+
+def cmd_install(argv):
+    dry = "--dry-run" in argv
+    rc = cmd_build(argv)
+    if rc:
+        return rc
+    print("")
+    installed = refused = 0
+    for pid in _ids_from(argv):
+        meta, _, _ = _load(pid)
+        surfaces = meta.get("surfaces") or ["skill"]
+        if isinstance(surfaces, str):
+            surfaces = [surfaces]
+        if "skill" not in surfaces:
+            print("  skip  %s: no skill surface (surfaces: %s). "
+                  "Its build/ output is for manual upload."
+                  % (pid, ",".join(surfaces)))
+            continue
+        srcp = os.path.join(ROOT, "build", "skills", pid, "SKILL.md")
+        with open(srcp, "r", encoding="utf-8") as fh:
+            new = fh.read()
+        for root in _skill_roots(meta):
+            tgt = os.path.join(root, pid, "SKILL.md")
+            state = "new"
+            if os.path.exists(tgt):
+                with open(tgt, "r", encoding="utf-8") as fh:
+                    cur = fh.read()
+                mk = SF.read_marker(cur)
+                if mk is None:
+                    state = "foreign"
+                elif mk.group("sha") == SF.content_sha(cur):
+                    state = ("same" if SF.content_sha(cur) == SF.content_sha(new)
+                             else "managed")
+                else:
+                    state = "hand-edited"
+
+            if state == "same":
+                print("  ok    %s -> %s (unchanged)" % (pid, tgt))
+                continue
+            if state in ("hand-edited", "foreign") and not                     ("--force" in argv or "--adopt" in argv):
+                refused += 1
+                print("  REFUSED %s -> %s" % (pid, tgt))
+                print("          %s" % (
+                    "that file was hand-edited since install"
+                    if state == "hand-edited" else
+                    "that file is not managed by this repo"))
+                print("          --adopt  copy it to inbox/staged/ so you can "
+                      "merge the edit back into canonical")
+                print("          --force  discard it and overwrite")
+                continue
+            if state in ("hand-edited", "foreign") and "--adopt" in argv:
+                dest = os.path.join(ROOT, "inbox", "staged",
+                                    pid + ".adopted.md")
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                if not dry:
+                    try:
+                        with open(tgt, "r", encoding="utf-8") as fh, \
+                                open(dest, "w", encoding="utf-8") as out:
+                            out.write(fh.read())
+                    except OSError as exc:
+                        refused += 1
+                        print("  FAILED adopt %s: %s" % (tgt, exc))
+                        continue
+                print("  adopt %s -> %s" % (tgt, os.path.relpath(dest, ROOT)))
+                print("          now reconcile it into prompts/%s.md, then "
+                      "re-run install" % pid)
+                continue
+            if dry:
+                print("  would install %s -> %s (%s)" % (pid, tgt, state))
+                continue
+            try:
+                os.makedirs(os.path.dirname(tgt), exist_ok=True)
+                with open(tgt, "w", encoding="utf-8") as fh:
+                    fh.write(new)
+            except OSError as exc:
+                refused += 1
+                print("  FAILED %s -> %s" % (pid, tgt))
+                print("          %s" % exc)
+                print("          The built file is ready at %s --"
+                      % os.path.relpath(srcp, ROOT))
+                print("          copy it yourself if the permission problem "
+                      "is not fixable.")
+                continue
+            installed += 1
+            print("  ok    %s -> %s" % (pid, tgt))
+
+    print("\ninstall: %d written, %d refused" % (installed, refused))
+    if installed:
+        print("\nRestart your Claude Code session to pick these up -- skills "
+              "are read at session start.")
+    return 1 if refused else 0
+
+
+def cmd_fill(argv):
+    ids = _ids_from(argv)
+    if not ids:
+        sys.stderr.write("fill needs an id\n")
+        return 2
+    pid = ids[0]
+    meta, body, rel = _load(pid)
+    from_args = _arg_overrides(meta, _positional(argv)[1:])
+    overrides = dict(from_args)
+    overrides.update(_parse_vars(argv))
+    r = E.resolve(ROOT, pid, meta, overrides,
+                  override_origins={k: "command line" for k in from_args})
+    text, missing = T.render(body, r.values)
+    if missing:
+        sys.stderr.write("unresolved: %s\nSet them in private/env/%s.env or "
+                         "pass --var NAME=value\n" % (", ".join(missing), pid))
+        return 1
+    if "--stdout" in argv:
+        sys.stdout.write(text)
+        return 0
+    import subprocess
+    try:
+        r = subprocess.run(["pbcopy"], input=text.encode("utf-8"),
+                           stderr=subprocess.PIPE)
+    except OSError as exc:
+        r = None
+        err = str(exc)
+    else:
+        err = r.stderr.decode("utf-8", "replace").strip()
+    if r is None or r.returncode != 0:
+        sys.stderr.write(
+            "could not reach the clipboard (pbcopy: %s).\n"
+            "The rendered prompt is on stdout instead -- pipe it yourself:\n"
+            "  ./bin/prompt fill %s '<account>' --stdout | pbcopy\n\n"
+            % (err or "failed", pid))
+        sys.stdout.write(text)
+        return 1
+    print("%s: %d chars copied to the clipboard." % (pid, len(text)))
+    return 0
+
+
+def cmd_env(argv):
+    ids = _positional(argv)
+    if not ids:
+        sys.stderr.write("env needs an id\n")
+        return 2
+    pid = ids[0]
+    meta, body, _ = _load(pid)
+    from_args = _arg_overrides(meta, ids[1:])
+    overrides = dict(from_args)
+    overrides.update(_parse_vars(argv))
+    r = E.resolve(ROOT, pid, meta, overrides,
+                  override_origins={k: "command line" for k in from_args})
+
+    unresolvable = []
+    rows = []
+    for v in E.declared_vars(meta):
+        n = v["name"]
+        have = str(r.values.get(n, ""))
+        if have.strip():
+            state = "set (%d chars)" % len(have)
+        elif v.get("from-arg"):
+            # Not missing -- supplied per use. Naming it MISSING implies
+            # something is broken when nothing is.
+            state = "per-invocation (pass it as $%s)" % v["from-arg"]
+        elif v.get("required"):
+            state = "MISSING (required)"
+            unresolvable.append(n)
+        else:
+            state = "empty (optional)"
+        # The .env filename repeats the prompt id, which is already known
+        # from the command line -- drop it so the column stays narrow.
+        origin = r.origin.get(n, "-")
+        if origin.endswith(pid + ".env"):
+            origin = origin[:-(len(pid) + 4)] + "<id>.env"
+        rows.append((n, origin, state, have))
+
+    hdr = ("variable", "value came from", "state")
+    w0 = max([len(hdr[0])] + [len(x[0]) for x in rows])
+    w1 = max([len(hdr[1])] + [len(x[1]) for x in rows])
+    print("%-*s  %-*s  %s" % (w0, hdr[0], w1, hdr[1], hdr[2]))
+    print("%-*s  %-*s  %s" % (w0, "-" * w0, w1, "-" * w1, "-" * len(hdr[2])))
+    for n, origin, state, have in rows:
+        print("%-*s  %-*s  %s" % (w0, n, w1, origin, state))
+        if "--resolved" in argv and have.strip():
+            flat = have.replace("\n", " ").strip()
+            limit = 76 - w0
+            preview = flat if len(flat) <= limit else flat[:limit - 3] + "..."
+            print("%-*s  %s" % (w0, "", preview))
+
+    argnames = [v["from-arg"] for v in E.declared_vars(meta)
+                if v.get("from-arg") and not str(r.values.get(v["name"], "")).strip()]
+    if argnames:
+        print("\nPer-invocation values are not stored. To see this filled in:")
+        print("  ./bin/prompt env %s %s"
+              % (pid, " ".join("'<%s>'" % a for a in argnames)))
+    return 1 if unresolvable else 0
+
+
+def cmd_init(argv):
+    src = os.path.join(ROOT, "env")
+    dst = os.path.join(ROOT, "private", "env")
+    os.makedirs(dst, exist_ok=True)
+    made = skipped = 0
+    for fn in sorted(os.listdir(src)) if os.path.isdir(src) else []:
+        if not fn.endswith(".env.example"):
+            continue
+        target = os.path.join(dst, fn[:-len(".example")])
+        if os.path.exists(target):
+            print("  keep  private/env/%s (already exists)" % os.path.basename(target))
+            skipped += 1
+            continue
+        with open(os.path.join(src, fn), "r", encoding="utf-8") as fh, \
+                open(target, "w", encoding="utf-8") as out:
+            out.write(fh.read())
+        print("  made  private/env/%s" % os.path.basename(target))
+        made += 1
+    print("\ninit: %d created, %d kept. Fill in the blanks, then "
+          "./bin/prompt check" % (made, skipped))
+    return 0
+
+
+def cmd_new(argv):
+    ids = _positional(argv)
+    if len(ids) != 1:
+        sys.stderr.write("new takes exactly one id, e.g. ./bin/prompt new account-brief\n")
+        return 2
+    pid = ids[0]
+    # The id becomes a filename, a skill directory name, and a slash command,
+    # so constrain it here rather than discovering the problem three steps
+    # later. Leading underscores are reserved: _canonical_paths() skips them,
+    # which would make the new file invisible to list/check/build.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", pid):
+        sys.stderr.write(
+            "invalid id %r.\n"
+            "Use lowercase letters, digits and hyphens, starting with a letter "
+            "or digit\n(2-64 chars). The id becomes the filename, the skill "
+            "directory, and the\nslash command, so it has to be safe in all "
+            "three.\n" % pid)
+        return 2
+    path = os.path.join(ROOT, "prompts", pid + ".md")
+    if os.path.exists(path):
+        sys.stderr.write("%s already exists\n" % os.path.relpath(path, ROOT))
+        return 1
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(SCAFFOLD % {"id": pid})
+    print("created %s\nEdit it, then: ./bin/prompt check %s"
+          % (os.path.relpath(path, ROOT), pid))
+    return 0
+
+
+SCAFFOLD = """---
+id: %(id)s
+title: TODO one-line human title
+description: TODO -- this is what makes Claude auto-invoke the skill. Describe
+  WHEN to use it, not just what it is. "Use before a customer meeting when the
+  user names an account" beats "generates an account brief".
+kind: prompt
+status: draft
+surfaces: [skill]
+vars: []
+---
+
+## Role
+
+TODO
+
+## Output contract
+
+TODO -- be explicit and bounded.
+
+## Do not
+
+- TODO
+"""
+
+
+
+
+
+# --------------------------------------------------------------------------
+
+def cmd_scan(argv):
+    mode = argv[0] if argv else "--all"
+    if mode == "--staged":
+        return S.report(S.scan_staged(ROOT), "pre-commit scan")
+    if mode == "--push":
+        return S.report(S.scan_push(ROOT, sys.stdin.read().splitlines()),
+                        "pre-push scan")
+    if mode in ("--all", "--worktree"):
+        return S.report(S.scan_worktree(ROOT), "worktree scan")
+    sys.stderr.write("unknown scan mode %r (use --staged, --push, or --all)\n" % mode)
+    return 2
+
+
+def cmd_doctor(argv):
+    ok, warn, bad = [], [], []
+
+    def sh(*args):
+        import subprocess
+        r = subprocess.run(args, cwd=ROOT, stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL)
+        return r.returncode, r.stdout.decode("utf-8", "replace").strip()
+
+    # 1. python
+    ok.append("interpreter: %s (%d.%d.%d)" % (sys.executable,
+              *sys.version_info[:3]))
+    if sys.version_info < (3, 9):
+        bad.append("Python %d.%d is older than the 3.9 floor this code targets."
+                   % sys.version_info[:2])
+
+    # 2. the zshrc alias landmine
+    zshrc = os.path.expanduser("~/.zshrc")
+    if os.path.exists(zshrc):
+        with open(zshrc, "r", encoding="utf-8", errors="replace") as fh:
+            body = fh.read()
+        if 'alias python3=' in body:
+            target = body.split('alias python3=', 1)[1].split("\n", 1)[0]
+            target = target.strip().strip('"').strip("'")
+            code, _ = sh("/bin/sh", "-c", "command -v %s" % target)
+            if code != 0:
+                warn.append(
+                    "~/.zshrc aliases python3 -> %s, which is NOT installed.\n"
+                    "      Harmless here (shebangs ignore aliases) but "
+                    "`python3 bin/prompt` will fail.\n"
+                    "      Always run ./bin/prompt." % target)
+
+    # 3. git hooks
+    code, hp = sh("git", "config", "--get", "core.hooksPath")
+    if hp == ".githooks":
+        ok.append("core.hooksPath = .githooks")
+    else:
+        if "--fix" in argv:
+            rc, _ = sh("git", "config", "core.hooksPath", ".githooks")
+            # Verify the write landed. Never report success on an unchecked
+            # subprocess -- a sandboxed or read-only .git/config fails here,
+            # and claiming the gate is active when it is not is the worst
+            # possible lie for this tool to tell.
+            _, now = sh("git", "config", "--get", "core.hooksPath")
+            if now == ".githooks":
+                ok.append("core.hooksPath set to .githooks")
+            else:
+                bad.append(
+                    "could not set core.hooksPath (git exit %d) -- the gate is "
+                    "NOT active.\n"
+                    "      .git/config may be read-only or sandboxed. Run by hand:\n"
+                    "        git config core.hooksPath .githooks" % rc)
+        else:
+            bad.append("core.hooksPath is %s -- the gate is NOT active.\n"
+                       "      Fix: ./bin/prompt doctor --fix"
+                       % (repr(hp) if hp else "unset"))
+    for hook in ("pre-commit", "pre-push"):
+        path = os.path.join(ROOT, ".githooks", hook)
+        if not os.path.exists(path):
+            bad.append(".githooks/%s is missing." % hook)
+        elif not os.access(path, os.X_OK):
+            if "--fix" in argv:
+                try:
+                    os.chmod(path, 0o755)
+                except OSError as e:
+                    bad.append("could not chmod .githooks/%s: %s" % (hook, e))
+                else:
+                    ok.append(".githooks/%s made executable" % hook)
+            else:
+                bad.append(".githooks/%s is not executable.\n"
+                           "      Fix: ./bin/prompt doctor --fix" % hook)
+        else:
+            ok.append(".githooks/%s present and executable" % hook)
+
+    # 4. containment -- gitignore is not enough on its own, `git add -f`
+    #    defeats it, which is why scan has an independent path guard.
+    for d in ("private", "inbox", "build"):
+        code, _ = sh("git", "check-ignore", "-q", d + "/")
+        (ok if code == 0 else bad).append(
+            "%s/ %s" % (d, "gitignored" if code == 0 else
+                        "IS NOT GITIGNORED -- add it to .gitignore now"))
+
+    # 5. config sanity
+    try:
+        allow = S.load_allow(ROOT)
+        ok.append("scan/allow.txt parses (%d entr%s)"
+                  % (len(allow), "y" if len(allow) == 1 else "ies"))
+    except ValueError as e:
+        bad.append(str(e))
+    try:
+        deny = S.load_denylist(ROOT)
+        if deny:
+            tiers = {}
+            for e in deny:
+                tiers[e.tier] = tiers.get(e.tier, 0) + 1
+            ok.append("private/denylist.txt parses (%s)"
+                      % ", ".join("%s %s" % (v, k) for k, v in sorted(tiers.items())))
+        else:
+            warn.append("private/denylist.txt absent -- pattern families are "
+                        "active, but no customer names are being checked.\n"
+                        "      Expected during Phase 0.")
+    except ValueError as e:
+        bad.append(str(e))
+
+    ok.append("%d pattern families loaded (%d blocking, %d review)"
+              % (len(P.PATTERNS),
+                 sum(1 for p in P.PATTERNS if p.severity == P.BLOCK),
+                 sum(1 for p in P.PATTERNS if p.severity == P.REVIEW)))
+
+    for line in ok:
+        print("  ok    %s" % line)
+    for line in warn:
+        print("  warn  %s" % line)
+    for line in bad:
+        print("  FAIL  %s" % line)
+    print("\ndoctor: %d ok, %d warning%s, %d failure%s"
+          % (len(ok), len(warn), "" if len(warn) == 1 else "s",
+             len(bad), "" if len(bad) == 1 else "s"))
+    return 1 if bad else 0
+
+
+COMMANDS = {"list": cmd_list, "show": cmd_show, "check": cmd_check,
+            "build": cmd_build, "install": cmd_install, "fill": cmd_fill,
+            "env": cmd_env, "init": cmd_init, "new": cmd_new,
+            "scan": cmd_scan, "doctor": cmd_doctor}
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    fn = COMMANDS.get(argv[0])
+    if fn is None:
+        sys.stderr.write("unknown command %r\n\n%s" % (argv[0], USAGE))
+        return 2
+    return fn(argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
