@@ -478,7 +478,14 @@ def cmd_fill(argv):
     overrides.update(_parse_vars(argv))
     r = E.resolve(ROOT, pid, meta, overrides,
                   override_origins={k: "command line" for k in from_args})
-    text, missing = T.render(body, r.values)
+    # Include the reference pointer, exactly as the skill and instructions
+    # surfaces do. Without it a prompt with a `reference:` key silently loses
+    # the instruction to read its knowledge file, and the model re-derives
+    # everything from scratch instead of erroring -- the worst failure mode
+    # available here.
+    text, missing = T.render(SF.reference_pointer(meta) + body.lstrip("\n"),
+                             r.values)
+    text = text.lstrip("\n")
     if missing:
         sys.stderr.write("unresolved: %s\nSet them in private/env/%s.env or "
                          "pass --var NAME=value\n" % (", ".join(missing), pid))
