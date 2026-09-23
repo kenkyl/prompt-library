@@ -201,11 +201,41 @@ numbering here is preserved rather than closed up.
 
 ## 9. Setup
 
-1. Add the built copy of this file to the project knowledge base as `sa-forecast-job-spec`.
-2. Run the prompt manually (`./bin/prompt fill sa-forecast-brief`). Validate by internal consistency per §7 — do not check against a remembered deal count; it moves daily.
-3. Schedule weekdays, 45 minutes before you start. If forecast guidance runs on a weekly
-   cadence, consider a fuller Monday variant that adds week-over-week movement.
-4. Open the field-update request described in the rules section in parallel.
+This document and the prompt are two artifacts built from one repository. Neither is
+hand-edited: both are generated, and editing a built copy is how the two previously
+drifted apart.
+
+**First-time setup**
+
+1. `./bin/prompt build sa-forecast-brief` — produces the knowledge file (this
+   document, at `build/knowledge/sa-forecast-job-spec.md`) and the skill
+   (`build/skills/sa-forecast-brief/SKILL.md`).
+2. Upload the built knowledge file to the project knowledge base, named
+   `sa-forecast-job-spec`. The prompt's opening line names that file exactly. If it
+   is missing the job does not error — it silently re-derives every query from
+   scratch, which is the failure mode to watch for.
+3. `./bin/prompt install sa-forecast-brief` — installs the skill locally.
+4. Point the scheduled task at the `sa-forecast-brief` skill.
+5. Run it manually once. Validate by internal consistency per §7 — never against a
+   remembered deal count, which moves daily.
+6. Open the field-update request described in the rules section in parallel.
+
+**Scheduling**
+
+Weekdays, 45 minutes before you start. If forecast guidance runs on a weekly cadence,
+consider a fuller Monday variant that adds week-over-week movement.
+
+**After any edit to the prompt or this spec**
+
+Edit the canonical file in the repository, never a built copy, then:
+
+1. `./bin/prompt build sa-forecast-brief`
+2. `./bin/prompt install sa-forecast-brief` — refuses if a built copy was
+   hand-edited, rather than silently discarding the edit. Use `--adopt` to pull that
+   edit back into the canonical file.
+3. Re-upload the knowledge file **only if this document changed**. The skill and the
+   knowledge file are versioned together in git but uploaded separately, so a spec
+   change that is not re-uploaded is the one way the two can still fall out of step.
 
 ---
 
