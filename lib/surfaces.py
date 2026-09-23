@@ -67,7 +67,7 @@ def skill_values(meta: dict, values: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
-def _reference_pointer(meta: dict) -> str:
+def reference_pointer(meta: dict) -> str:
     ref = meta.get("reference")
     if not ref:
         return ""
@@ -84,7 +84,7 @@ def emit_skill(meta: dict, body: str, values: Dict[str, str],
                 "disable-model-invocation", "user-invocable"):
         if meta.get(key) is not None:
             fmatter[key] = meta[key]
-    rendered, missing = T.render(_reference_pointer(meta) + body.lstrip("\n"),
+    rendered, missing = T.render(reference_pointer(meta) + body.lstrip("\n"),
                                 skill_values(meta, values))
     return FM.emit(fmatter) + "\n" + rendered.lstrip("\n"), missing
 
@@ -97,7 +97,7 @@ def emit_instructions(meta: dict, body: str, values: Dict[str, str],
         "     custom instructions, or a scheduled task's Instructions.\n"
         "     Do not edit here; edit prompts/%s.md and rebuild. -->\n\n"
         % (meta.get("title") or prompt_id, prompt_id))
-    rendered, missing = T.render(_reference_pointer(meta) + body, values)
+    rendered, missing = T.render(reference_pointer(meta) + body, values)
     return header + rendered.lstrip("\n"), missing
 
 
