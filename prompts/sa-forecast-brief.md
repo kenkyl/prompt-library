@@ -58,13 +58,12 @@ this in under three minutes. No preamble.
 If I named a different territory or territory list when invoking you, scope to that
 instead and say which scope you used in the header.
 
-TOOLS — load these first: {{CRM_TOOL}} for all CRM reads; the enterprise search
-connector for call transcripts and internal content; mail, calendar, drive, chat
-and issue-tracker connectors for activity. CRM access is read-only.
+TOOLS — load these first: {{CRM_TOOL}} for all CRM reads; the enterprise
+search connector for call transcripts and internal content; mail, calendar,
+drive, chat and issue-tracker connectors for activity. CRM access is read-only.
 
 STEP 1 — PIPELINE
-Run the primary query (spec §3). It covers the current fiscal quarter plus
-the
+Run the primary query (spec §3). It covers the current fiscal quarter plus the
 next three via relative date literals — do not hardcode fiscal years.
 Group by ForecastCategoryName in the order Commit, Best Case, Pipeline, Omitted.
 Within each, separate by quarter using absolute labels derived at run time
@@ -108,8 +107,9 @@ Mark confidence low where the only support is call sentiment rather than a
 concrete event, commitment or date.
 
 STEP 6 — TEAM VIEW
-One short block per SA ({{SA_TEAM}}): open deal count, Commit New ARR,
-count of Tier 1 signals, worst stale-next-step figure.
+One short block per SA ({{SA_TEAM}}):
+open deal count, Commit New ARR, count of Tier 1 signals, worst
+stale-next-step figure.
 
 FORMAT
 Output a single self-contained HTML file per spec §7 — inline CSS and JS, no
