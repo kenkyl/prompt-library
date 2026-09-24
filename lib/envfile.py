@@ -188,8 +188,17 @@ def generate_example(prompt_id: str, meta: dict) -> str:
         if v.get("private"):
             # Never write a private var's resolved value into a committed
             # file. Point at the public example fragment instead.
+            #
+            # The hint goes on its OWN comment line with nothing after the
+            # path. It used to trail the pointer with "<- shape shown here",
+            # and uncommenting that line made the prose part of the filename --
+            # so following the file's own guidance produced a broken .env.
             if v.get("example-file"):
-                lines.append("# %s=@%s   <- shape shown here; substitute your own"
+                lines.append("# The committed example shows the expected "
+                             "shape. Point at your own file,")
+                lines.append("# or use the example by replacing the blank "
+                             "line below with:")
+                lines.append("#   %s=@%s"
                              % (name, os.path.relpath(
                                  str(v["example-file"]), "private/env")))
             lines.append("%s=" % name)

@@ -468,11 +468,23 @@ def cmd_build(argv):
         # build failed even when correctly configured. Explicitly naming a
         # prompt still errors: you asked for that one specifically.
         if blocking and not _positional(argv):
-            names = ", ".join("{{%s}}" % n for n, _ in blocking)
-            print("  skip  %s: needs %s per invocation. Build it with a value:"
-                  % (pid, names))
-            print("          ./bin/prompt build %s --var %s='...'"
-                  % (pid, blocking[0][0]))
+            # Two different reasons, two different fixes. Calling an overlay
+            # value "per invocation" sends a new clone to --var when what it
+            # actually needs is to fill in private/env/ -- and this message is
+            # the first thing a fresh clone reads.
+            per_use = [n for n, d in blocking if d.get("from-arg")]
+            overlay = [n for n, d in blocking if not d.get("from-arg")]
+            print("  skip  %s:" % pid)
+            if overlay:
+                print("          unset in the overlay: %s"
+                      % ", ".join("{{%s}}" % n for n in overlay))
+                print("          fill private/env/%s.env (see "
+                      "env/%s.env.example)" % (pid, pid))
+            if per_use:
+                print("          supplied per use: %s"
+                      % ", ".join("{{%s}}" % n for n in per_use))
+                print("          ./bin/prompt build %s --var %s='...'"
+                      % (pid, per_use[0]))
             skipped.append(pid)
             continue
         if blocking:
@@ -1136,7 +1148,14 @@ def main(argv):
     if fn is None:
         sys.stderr.write("unknown command %r\n\n%s" % (argv[0], USAGE))
         return 2
-    return fn(argv[1:])
+    try:
+        return fn(argv[1:])
+    except (E.EnvError, FM.FrontmatterError) as exc:
+        # A malformed .env or frontmatter is a user-fixable mistake, so it gets
+        # a message naming the file and the problem. A traceback here sends
+        # people reading our source instead of their own config.
+        sys.stderr.write("%s\n" % exc)
+        return 1
 
 
 if __name__ == "__main__":
