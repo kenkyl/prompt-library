@@ -4,9 +4,11 @@ Surfaces:
   skill        ~/.claude/skills/<id>/SKILL.md -- gives BOTH /<id> and
                model-invocation. Claude Code merged custom commands into
                skills, so these are one artifact, not two. .claude/commands/
-               still works but is the legacy format.
+               still works but is the legacy format. A `reference:` doc is
+               BUNDLED into <id>/references/ so the skill is self-contained.
   instructions build/instructions/<id>.md -- paste into a claude.ai Project's
-               "Custom instructions" box. Flat, no frontmatter.
+               "Custom instructions" box. Flat, no frontmatter. No bundling
+               channel, so a `reference:` doc stays a Project knowledge file.
   knowledge    build/knowledge/<id>.md -- upload as a Project knowledge file.
   cli          rendered to stdout / pbcopy by `prompt fill`.
 
@@ -67,10 +69,36 @@ def skill_values(meta: dict, values: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
-def reference_pointer(meta: dict) -> str:
+BUNDLED_REF_DIR = "references"
+
+
+def reference_pointer(meta: dict, bundled: bool = False) -> str:
+    """The line that sends the model to its reference doc.
+
+    Two forms, because the two delivery routes really are different. The
+    `skill` surface ships the doc inside its own directory, so it can name an
+    exact relative path -- and it must forbid looking anywhere else. A
+    scheduled run of this prompt that could not find its knowledge file did
+    not fail: it searched the enterprise connector and Drive, found an older
+    copy of the same spec by name, and read that instead. Naming the path is
+    only half the fix; closing the fallback is the other half.
+
+    The `instructions` surface has no bundling channel -- it is text pasted
+    into a box -- so there the doc stays a Project knowledge file.
+    """
     ref = meta.get("reference")
     if not ref:
         return ""
+    if bundled:
+        return ("Read `%s/%s.md`, which ships inside this skill's own "
+                "directory,\nfor all queries, field mappings and rules. Do not "
+                "re-derive them.\n\n"
+                "That bundled file is the only authoritative copy. If it is "
+                "missing,\nsay so and stop. Do not search Drive, the enterprise "
+                "search\nconnector, or anywhere else for a file with a similar "
+                "name --\nolder copies of this spec exist, and reading one "
+                "silently produces\na brief built on stale field mappings.\n\n"
+                % (BUNDLED_REF_DIR, ref))
     return ("Reference the project knowledge file `%s` for all queries, field\n"
             "mappings and rules. Do not re-derive them.\n\n" % ref)
 
@@ -84,8 +112,9 @@ def emit_skill(meta: dict, body: str, values: Dict[str, str],
                 "disable-model-invocation", "user-invocable"):
         if meta.get(key) is not None:
             fmatter[key] = meta[key]
-    rendered, missing = T.render(reference_pointer(meta) + body.lstrip("\n"),
-                                skill_values(meta, values))
+    rendered, missing = T.render(
+        reference_pointer(meta, bundled=True) + body.lstrip("\n"),
+        skill_values(meta, values))
     return FM.emit(fmatter) + "\n" + rendered.lstrip("\n"), missing
 
 
