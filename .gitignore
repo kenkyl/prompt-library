@@ -12,6 +12,8 @@ build/
 
 # Local scratch
 .DS_Store
-*-forecast-*
+# NOTE: there used to be a `*-forecast-*` glob here. It also swallowed
+# anything under references/, which would have made the sanitized spec
+# silently untracked. Raw originals now live in inbox/, already ignored above.
 __pycache__/
 *.pyc
