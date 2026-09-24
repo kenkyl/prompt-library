@@ -310,10 +310,27 @@ def cmd_check(argv):
         if not str(meta.get("description") or "").strip():
             err("`description:` is required -- it is what makes Claude "
                 "auto-invoke the skill correctly")
-        elif len(str(meta["description"])) > 1400:
-            warns.append("%s: description is %d chars; Claude Code caps "
-                         "description+when_to_use at 1536"
-                         % (rel, len(str(meta["description"]))))
+        else:
+            # The cap depends on where the skill ends up, so the check has to
+            # know the distribute target. A prompt bound for the account
+            # catalog has a tighter limit than Claude Code's, and exceeding it
+            # is not caught until the upload is rejected -- long after check
+            # said the prompt was fine.
+            dlen = len(str(meta["description"]))
+            _dist = meta.get("distribute") or []
+            if isinstance(_dist, str):
+                _dist = [_dist]
+            cap = (SF.DESC_CAP_ACCOUNT if "account" in _dist
+                   else SF.DESC_CAP_LOCAL)
+            where = ("the account catalog" if "account" in _dist
+                     else "Claude Code")
+            if dlen > cap:
+                err("description is %d chars, over the %d cap for %s. It will "
+                    "be rejected at upload, not here" % (dlen, cap, where))
+            elif dlen > cap - SF.DESC_WARN_MARGIN:
+                warns.append("%s: description is %d chars, close to the %d cap "
+                             "for %s -- no room left for `when_to_use`"
+                             % (rel, dlen, cap, where))
         kind = meta.get("kind") or "prompt"
         if kind not in ("prompt", "reference"):
             err("kind must be prompt or reference, got %r" % kind)
