@@ -8,6 +8,60 @@ The problem it solves: the same prompt text was living in two or three places
 at once and drifting. Now there is exactly one copy, and the others are built
 from it.
 
+## How it works
+
+One canonical file goes in; a variable layer resolves it; a surface emitter
+shapes it for wherever it's consumed:
+
+```
+prompts/<id>.md, references/<id>.md          <- the only thing you hand-edit
+        |
+        |  frontmatter `vars:` is the contract: {{NAME}} tokens in the body
+        |  must match declared vars exactly, in both directions
+        v
++- variable resolution (lib/envfile.py) -------------------------------------+
+|                                                                            |
+|  frontmatter          private/env/         private/env/      --var K=V /   |
+|  example:/default:  > _shared.env       >  <id>.env       >  CLI args      |
+|  (check's smoke        (shared secrets)     (per-prompt        (highest    |
+|   test values)                               values)            priority)  |
+|                                                                            |
++----------------------------------------------------------------------------+
+        |
+        |  {{VAR}} substitution + {{#IF_VAR}} section guards (lib/template.py)
+        v
++- surface emitters (lib/surfaces.py) ---------------------------------------+
+|                                                                            |
+|   skill              instructions           knowledge           cli        |
+|     |                     |                      |                |        |
+|     v                     v                      v                v        |
+|  build/skills/      build/instructions/    build/knowledge/   stdout /     |
+|  <id>/SKILL.md      <id>.md                <id>.md            pbcopy       |
+|     |                (paste into            (upload as         (`prompt    |
+|     |                 claude.ai Project      Project              fill`)   |
+|     |                 custom instructions)   knowledge file)               |
+|     v                                                                      |
+|  `install` copies this to ~/.claude/skills/<id>/SKILL.md, tagged with a    |
+|  managed marker (content-sha256) so a later hand-edit there is detected    |
+|  instead of silently overwritten                                           |
+|                                                                            |
++----------------------------------------------------------------------------+
+        |
+        |  every declared var is also written out as env/<id>.env.example
+        v  (public, documents the contract, never holds real values)
+
+A pre-commit/pre-push scan (lib/scan.py + lib/patterns.py + private/denylist.txt)
+gates every commit and push regardless of which command produced the change,
+so a private value can never reach a committed file through any path above.
+```
+
+Reading it top to bottom: `check` validates the top box and smoke-renders it
+with example values only; `build` runs the full pipeline down to `build/`;
+`install` additionally copies the `skill` branch into `~/.claude/skills/`;
+`fill` shortcuts straight to the `cli` branch. `env <id>` prints which layer
+supplied each variable's value, which is the fastest way to see this diagram
+applied to one real prompt.
+
 ## The five commands that matter
 
 ```bash
