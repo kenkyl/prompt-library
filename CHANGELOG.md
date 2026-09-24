@@ -1,5 +1,61 @@
 # Changelog
 
+## Phase 3 — 2026-09-23
+
+Packaged as a plugin, and wrote down two things about Claude's surfaces that
+cost live failures to learn.
+
+**Added**
+
+- The build produces a real plugin: `build/plugin/.claude-plugin/plugin.json`
+  (name `pl`, version from a committed `VERSION`) plus `skills/<id>/` with the
+  bundled `references/`. `install` copies the whole tree to
+  `~/.claude/skills/pl/`, where it loads as `pl@skills-dir` and namespaces its
+  skills `/pl:<id>`. Loose skills are the "quick experiments" tier per the
+  docs; plugins are the tier for versioned, reusable libraries.
+- `distribute:` frontmatter, separate from `surfaces:`. What gets *built* and
+  where it must *land to be reachable* are different axes.
+- `doctor` validates the built plugin and reports pre-plugin loose installs
+  with the command to remove them.
+
+**Fixed**
+
+- Builds are reproducible. The managed marker carried a timestamp, so no two
+  builds were byte-identical even with identical content. That produced a
+  false "installed copy doesn't match" scare, and made every bundled sidecar
+  look changed on every install — burying the one that had actually changed.
+- Bare `./bin/prompt build` could never succeed, because one prompt needs a
+  per-invocation value and that failed the whole run. A sweep now skips and
+  reports; naming a prompt explicitly still errors.
+- `install` counted SKILL.md writes but not bundled sidecars, so replacing a
+  stale reference doc could report "0 written".
+- Removed the dead `scheduled: true` install target.
+
+**Learned the hard way — neither is in any documentation**
+
+- **`~/.claude/skills/` is interactive only.** A scheduled task resolves skills
+  from the account catalog and cannot see it. Worse, a task told to run a skill
+  absent from that catalog does not fail: it picks the closest name it can see
+  and proceeds. A run here executed the wrong skill and produced output.
+- **A skill that names a knowledge file it does not carry will find the wrong
+  one.** A scheduled run searched Drive, found an older copy of the same spec,
+  and read it without complaint. Bundling the doc inside the skill fixes it —
+  and the pointer must also *forbid* searching elsewhere, because naming the
+  path is only half the fix.
+
+**Known gaps**
+
+- No automated reachability check for `distribute: account`. The only local
+  view of the account catalog is a mirror that lags by hours, so a check
+  against it would report correctly-published skills as missing. Declared
+  intent drives a reminder instead.
+- **`private/` has no version history.** It is gitignored by design, which is
+  correct for secrets — but operationally critical content now lives there
+  with no history and no backup, including a CRM field map validated against a
+  live org. "Not in the public repo" and "not backed up anywhere" collapsed
+  into the same thing, and they should not have.
+- `private/denylist.txt` is still a 3-entry stub.
+
 ## Phases 0-1 — 2026-09-21
 
 One canonical file per prompt, compiled into the surfaces I actually use,
