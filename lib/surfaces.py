@@ -19,6 +19,7 @@ Targets Python 3.9. Stdlib only.
 """
 
 import hashlib
+import json
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -148,6 +149,49 @@ def emit_knowledge(meta: dict, body: str, values: Dict[str, str],
     if not head.startswith("# "):
         head = "# %s\n\n%s" % (title, head)
     return head, missing
+
+
+PLUGIN_NAME = "pl"
+
+
+def plugin_manifest(version: str, skill_ids) -> str:
+    """The `.claude-plugin/plugin.json` for the built plugin.
+
+    Why a plugin at all: loose skills under ~/.claude/skills/<id>/ are, per the
+    Claude Code docs, the "quick experiments" tier. Plugins are the tier for
+    "versioned releases, reusable across projects" -- which is what this library
+    is. A plugin also namespaces its skills as /<plugin>:<skill>, and the lack
+    of a namespace has already cost a real failure: an account-saved skill
+    landed in a shared bucket and a scheduled run picked a
+    similarly-named neighbour instead, silently.
+
+    Why the plugin is a BUILD OUTPUT rather than a distribution channel: a
+    marketplace ships what is committed, and what is committed here is
+    deliberately templated, because real values live in the gitignored overlay.
+    A plugin repo would ship unresolved placeholders. Built locally from each
+    person's own overlay, the same templates produce a working plugin for
+    whoever cloned them.
+
+    Kept short on purpose. Only `name` is required; every extra field is one
+    more thing to drift.
+    """
+    payload = {
+        "name": PLUGIN_NAME,
+        "displayName": "Prompt Library",
+        "description": "Prompts built from canonical templates in "
+                       "kenkyl/prompt-library.",
+        "version": version,
+        "repository": "https://github.com/kenkyl/prompt-library",
+        "license": "MIT",
+        "metadata": {"skills": sorted(skill_ids)},
+    }
+    # No build timestamp and no git describe. Either would make the manifest
+    # depend on something other than the templates, which is exactly what
+    # dropping `built=` from the marker was meant to stop: `diff -r` between
+    # two builds should mean "the templates differ", nothing else. The commit
+    # a build came from is already in `git log`.
+    # sort_keys so two builds of the same content are byte-identical.
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
 EMITTERS = {"skill": emit_skill,
