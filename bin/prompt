@@ -206,8 +206,8 @@ def cmd_check(argv):
     # House headings, matched loosely: numbered variants like "## 1. Role" and
     # "## 7. Output standards" are the same thing as "## Role" / "## Output
     # contract". Lifted from the existing corpus rather than imposed on it.
-    HOUSE = ((r"^#+\s*(?:\d+\.\s*)?Role\b", "a Role section"),
-             (r"^#+\s*(?:\d+\.\s*)?Output\b", "an Output section"))
+    HOUSE = ((r"^#+\s*(?:\d+\.\s*)?Role\b", "Role section"),
+             (r"^(?:#+\s*(?:\d+\.\s*)?Output\b|FORMAT\b)", "Output section or FORMAT block"))
 
     for pid in _ids_from(argv):
         meta, body, rel = _load(pid)
@@ -279,7 +279,16 @@ def cmd_check(argv):
         _, unresolved = T.render(body, r.values)
         for name in unresolved:
             d = next((x for x in decls if x["name"] == name), {})
-            if d.get("required"):
+            if not d.get("required"):
+                continue
+            ref = d.get("example-file")
+            if ref and not os.path.exists(os.path.join(ROOT, str(ref))):
+                err("{{%s}} declares `example-file: %s` but that file does not "
+                    "exist" % (name, ref))
+            elif ref:
+                err("{{%s}} has `example-file: %s`, which exists but resolved "
+                    "empty" % (name, ref))
+            else:
                 err("{{%s}} has neither `example:` nor `example-file:`, so a "
                     "fresh clone cannot smoke-test this prompt" % name)
 
@@ -469,7 +478,14 @@ def cmd_fill(argv):
     overrides.update(_parse_vars(argv))
     r = E.resolve(ROOT, pid, meta, overrides,
                   override_origins={k: "command line" for k in from_args})
-    text, missing = T.render(body, r.values)
+    # Include the reference pointer, exactly as the skill and instructions
+    # surfaces do. Without it a prompt with a `reference:` key silently loses
+    # the instruction to read its knowledge file, and the model re-derives
+    # everything from scratch instead of erroring -- the worst failure mode
+    # available here.
+    text, missing = T.render(SF.reference_pointer(meta) + body.lstrip("\n"),
+                             r.values)
+    text = text.lstrip("\n")
     if missing:
         sys.stderr.write("unresolved: %s\nSet them in private/env/%s.env or "
                          "pass --var NAME=value\n" % (", ".join(missing), pid))
