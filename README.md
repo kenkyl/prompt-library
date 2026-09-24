@@ -133,6 +133,50 @@ skill's own `references/` directory, and the generated pointer both names the ex
 relative path and forbids searching elsewhere for a similar name. Naming the path is
 only half the fix.
 
+## Turning a prompt into a scheduled job
+
+This is the one flow the repo deliberately does **not** automate, so here is the
+procedure. A scheduled task is scheduler *configuration* — a cron expression, a
+model, a permission mode, approved tool permissions — living in the desktop app's
+own registry. This repo cannot write it, cannot read it back, and cannot verify it,
+so it does not pretend to.
+
+What the repo does own is the artifact the task runs. The task's own instructions
+are one line.
+
+1. **Build and save the skill to your account.** `prompt install` puts it in
+   `~/.claude/skills/pl/`, which a scheduled task cannot see. Save the whole
+   directory it names — `build/plugin/skills/<id>/` — including `references/`.
+2. **Create the scheduled task** with its instructions set to little more than:
+   `Run the` \`<id>\` `skill, following its instructions exactly.` Add any
+   unattended-run notes there rather than in the prompt, since the same skill is
+   also used interactively where someone *is* at the keyboard.
+3. **Run it manually once** and read the progress panel, specifically confirming it
+   loaded *your* skill.
+
+**The warning that is not guessable, and the reason step 3 exists:** a scheduled
+task told to run a skill that is not in the account catalog **does not fail.** It
+picks the closest name it can see and proceeds. That happened here — a run grabbed a
+different skill with a similar name and produced output from the wrong one. Nothing
+errored. So "the task ran and produced a brief" is not evidence it ran *your* prompt.
+
+After any prompt change: `build`, `install`, and **re-save to the account**. A local
+install alone leaves the scheduled copy stale, and a stale copy still runs.
+
+### Non-goals
+
+Deliberately absent, so they don't get re-added:
+
+- **No `scheduled:` frontmatter.** It existed briefly and was wrong — it wrote files
+  the app generates rather than reads.
+- **Nothing writes the scheduler registry.** Cron expressions, permission modes and
+  tool grants stay where the app owns them. Putting them in frontmatter would create
+  a second source of truth that silently drifts from the real task.
+- **No automated reachability check.** The only local view of the account catalog is
+  a mirror that lags by hours; a check against it would report correctly-published
+  skills as missing. `distribute: account` drives a reminder, not an assertion — a
+  gate that cannot verify should not exist.
+
 ## The five commands that matter
 
 ```bash

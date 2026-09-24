@@ -34,6 +34,22 @@ SURFACES = ("skill", "instructions", "knowledge", "cli")
 #              read that catalog and cannot see ~/.claude/skills at all
 DISTRIBUTE = ("local", "account")
 
+# Description length caps differ by where a skill ends up, which is why they
+# live next to DISTRIBUTE rather than in check.
+#
+#   DESC_CAP_LOCAL    Claude Code's documented cap on description +
+#                     when_to_use combined.
+#   DESC_CAP_ACCOUNT  the cap when saving to the account catalog. Measured by
+#                     hitting a real upload rejection, not documented -- so
+#                     treat it as a floor that may be conservative rather than
+#                     an exact figure.
+#
+# Warn below each so there is room to add `when_to_use` later without a
+# surprise rejection.
+DESC_CAP_LOCAL = 1536
+DESC_CAP_ACCOUNT = 1024
+DESC_WARN_MARGIN = 136
+
 MARKER_PREFIX = "<!-- prompt-library:managed"
 
 # Deliberately carries NO timestamp. A `built=` field made every build differ
