@@ -18,7 +18,6 @@ rather than silently destroyed. See MARKER_RX.
 Targets Python 3.9. Stdlib only.
 """
 
-import datetime
 import hashlib
 import re
 from typing import Dict, List, Optional, Tuple
@@ -29,9 +28,21 @@ from . import template as T
 SURFACES = ("skill", "instructions", "knowledge", "cli")
 
 MARKER_PREFIX = "<!-- prompt-library:managed"
+
+# Deliberately carries NO timestamp. A `built=` field made every build differ
+# from the last even when content was identical, which cost real debugging
+# twice: once as a false "the installed copy does not match the build" scare,
+# and once by making every bundled sidecar look changed on every install --
+# burying the single sidecar that had actually changed. The content hash is
+# the identity that matters; provenance comes from git. Keeping this stable
+# makes `diff -r` between two builds a meaningful test.
+# `built=` is read-tolerated but never written. Markers installed before the
+# timestamp was dropped would otherwise stop matching, which would make every
+# already-installed file look foreign and make `install` refuse it -- breaking
+# working setups for a cosmetic format change.
 MARKER_RX = re.compile(
     r"^<!-- prompt-library:managed id=(?P<id>\S+) surface=(?P<surface>\S+) "
-    r"content-sha256=(?P<sha>[0-9a-f]{64}) built=(?P<built>\S+) -->$",
+    r"content-sha256=(?P<sha>[0-9a-f]{64})(?: built=(?P<built>\S+))? -->$",
     re.MULTILINE)
 
 # Canonical keys that are ours, not Claude Code's -- never passed through.
@@ -50,9 +61,8 @@ def content_sha(text: str) -> str:
 
 def add_marker(text: str, prompt_id: str, surface: str) -> str:
     body = MARKER_RX.sub("", text).rstrip() + "\n"
-    return "%s\n%s id=%s surface=%s content-sha256=%s built=%s -->\n" % (
-        body, MARKER_PREFIX, prompt_id, surface, content_sha(body),
-        datetime.datetime.now().replace(microsecond=0).isoformat())
+    return "%s\n%s id=%s surface=%s content-sha256=%s -->\n" % (
+        body, MARKER_PREFIX, prompt_id, surface, content_sha(body))
 
 
 def read_marker(text: str) -> Optional[re.Match]:

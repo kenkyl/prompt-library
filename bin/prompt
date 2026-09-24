@@ -160,12 +160,10 @@ def _sync_bundle(pid, srcdir, tgtdir, dry):
                 continue
             keep.add(name)
             source, target = os.path.join(src, name), os.path.join(dest, name)
-            # Skip unchanged sidecars so a no-op install stays silent, and
-            # compare with content_sha rather than raw bytes: add_marker
-            # stamps a fresh `built=` timestamp on every build, so the files
-            # are never byte-identical and a byte comparison would report
-            # every sidecar as replaced on every run -- burying the one
-            # install that actually did replace a stale spec.
+            # Skip unchanged sidecars so a no-op install stays silent.
+            # content_sha rather than raw bytes: it is the same identity
+            # `install` uses for SKILL.md, and it stays correct if a
+            # volatile field is ever added back to the marker.
             if os.path.exists(target):
                 with open(source, "r", encoding="utf-8") as a, \
                         open(target, "r", encoding="utf-8") as b:
