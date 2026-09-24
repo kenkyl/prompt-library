@@ -323,6 +323,23 @@ def cmd_check(argv):
         for s in surfaces:
             if s not in SF.SURFACES:
                 err("unknown surface %r (valid: %s)" % (s, ", ".join(SF.SURFACES)))
+        # `surfaces:` says what gets BUILT. `distribute:` says where it has to
+        # be INSTALLED to be reachable, which is a different axis -- conflating
+        # them is how an install target got shipped that wrote files nothing
+        # read. There is deliberately no automated reachability CHECK: the only
+        # local view of the account catalog is a mirror that lags by hours, so
+        # a check against it would report a correctly-published skill as
+        # missing, and a warning that cries wolf is worse than none.
+        dist = meta.get("distribute") or []
+        if isinstance(dist, str):
+            dist = [dist]
+        for d in dist:
+            if d not in SF.DISTRIBUTE:
+                err("unknown distribute target %r (valid: %s)"
+                    % (d, ", ".join(SF.DISTRIBUTE)))
+        if "account" in dist and "skill" not in surfaces:
+            err("distribute: account requires the `skill` surface -- there is "
+                "nothing to save to the account otherwise")
 
         # A `reference:` that resolves to nothing is an error HERE because it
         # is not one at run time. The model does not fail on a missing
@@ -427,6 +444,7 @@ def cmd_build(argv):
         print("\nbuild aborted: fix check first.")
         return rc
     wrote = []
+    skipped = []
     for pid in _ids_from(argv):
         meta, body, rel = _load(pid)
         surfaces = meta.get("surfaces") or ["skill"]
@@ -444,6 +462,19 @@ def cmd_build(argv):
             if d.get("from-arg") and not needs_baked:
                 continue
             blocking.append((name, d))
+        # A sweep (`build` with no ids) must not fail because ONE prompt needs
+        # a per-invocation value. Before this, bare `build` could never succeed
+        # on a repo containing any such prompt -- so a new clone's very first
+        # build failed even when correctly configured. Explicitly naming a
+        # prompt still errors: you asked for that one specifically.
+        if blocking and not _positional(argv):
+            names = ", ".join("{{%s}}" % n for n, _ in blocking)
+            print("  skip  %s: needs %s per invocation. Build it with a value:"
+                  % (pid, names))
+            print("          ./bin/prompt build %s --var %s='...'"
+                  % (pid, blocking[0][0]))
+            skipped.append(pid)
+            continue
         if blocking:
             for name, d in blocking:
                 print("  FAIL  %s: {{%s}} is required and unset." % (rel, name))
@@ -522,7 +553,8 @@ def cmd_build(argv):
 
     for w in wrote:
         print("  wrote %s" % w)
-    print("build: %d file%s" % (len(wrote), "" if len(wrote) == 1 else "s"))
+    print("build: %d file%s%s" % (len(wrote), "" if len(wrote) == 1 else "s",
+                                  ", %d skipped" % len(skipped) if skipped else ""))
     return 0
 
 
@@ -675,6 +707,30 @@ def cmd_install(argv):
 
     print("\ninstall: %d written, %d pruned, %d refused"
           % (installed, pruned_total[0], refused))
+
+    # Anything declaring `distribute: account` is NOT finished by install.
+    # A scheduled task resolves skills from the account catalog, not from
+    # ~/.claude/skills, so a local install leaves the scheduled copy stale --
+    # silently, and a stale copy still runs.
+    for pid in _ids_from(argv):
+        try:
+            meta, _, _ = _load(pid)
+        except SystemExit:
+            continue
+        dist = meta.get("distribute") or []
+        if isinstance(dist, str):
+            dist = [dist]
+        if "account" in dist:
+            print("\n  %s also needs an ACCOUNT save -- install does not and "
+                  "cannot do this." % pid)
+            print("  A scheduled task reads the account catalog, not "
+                  "~/.claude/skills, so")
+            print("  without it the scheduled run keeps using the previous "
+                  "version. Save:")
+            print("    %s"
+                  % os.path.relpath(_plugin_skill_dir(pid), ROOT))
+            print("  (the whole directory -- the bundled references/ must "
+                  "travel with it)")
     if installed:
         print("\nRestart your Claude Code session to pick these up -- skills "
               "are read at session start.")

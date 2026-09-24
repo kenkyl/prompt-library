@@ -28,6 +28,12 @@ from . import template as T
 
 SURFACES = ("skill", "instructions", "knowledge", "cli")
 
+# Where a built artifact must END UP to be reachable. Orthogonal to SURFACES:
+#   local   -- `prompt install` handles it (the plugin under ~/.claude/skills)
+#   account -- must be saved to the account catalog by hand; scheduled tasks
+#              read that catalog and cannot see ~/.claude/skills at all
+DISTRIBUTE = ("local", "account")
+
 MARKER_PREFIX = "<!-- prompt-library:managed"
 
 # Deliberately carries NO timestamp. A `built=` field made every build differ
