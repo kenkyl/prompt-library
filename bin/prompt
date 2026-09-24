@@ -12,6 +12,7 @@ PyYAML nor tomllib. Do not "simplify" this by adding a dependency.
 
 import os
 import re
+import shutil
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -136,6 +137,61 @@ def _skill_roots(meta):
     return roots
 
 
+def _sync_bundle(pid, srcdir, tgtdir, dry):
+    """Mirror a skill's generated sidecars (references/) into its install dir.
+
+    Sidecars are pure build output, regenerated from canonical on every build,
+    so they are overwritten without a marker check -- the marker on SKILL.md
+    governs the unit and a sidecar has no independent edit worth keeping.
+
+    Orphans ARE pruned, but only ones carrying our own marker. Renaming a
+    `reference:` would otherwise leave the old doc sitting in the install
+    directory, and a stale reference doc that is still readable is precisely
+    the failure this bundling exists to remove. An unmarked file in there is
+    someone else's and is left alone.
+    """
+    written, pruned = [], []
+    src = os.path.join(srcdir, SF.BUNDLED_REF_DIR)
+    dest = os.path.join(tgtdir, SF.BUNDLED_REF_DIR)
+    keep = set()
+    if os.path.isdir(src):
+        for name in sorted(os.listdir(src)):
+            if not name.endswith(".md"):
+                continue
+            keep.add(name)
+            source, target = os.path.join(src, name), os.path.join(dest, name)
+            # Skip unchanged sidecars so a no-op install stays silent, and
+            # compare with content_sha rather than raw bytes: add_marker
+            # stamps a fresh `built=` timestamp on every build, so the files
+            # are never byte-identical and a byte comparison would report
+            # every sidecar as replaced on every run -- burying the one
+            # install that actually did replace a stale spec.
+            if os.path.exists(target):
+                with open(source, "r", encoding="utf-8") as a, \
+                        open(target, "r", encoding="utf-8") as b:
+                    if SF.content_sha(a.read()) == SF.content_sha(b.read()):
+                        continue
+            if not dry:
+                os.makedirs(dest, exist_ok=True)
+                shutil.copyfile(source, target)
+            written.append(target)
+    if os.path.isdir(dest):
+        for name in sorted(os.listdir(dest)):
+            if not name.endswith(".md") or name in keep:
+                continue
+            stale = os.path.join(dest, name)
+            try:
+                with open(stale, "r", encoding="utf-8") as fh:
+                    if SF.read_marker(fh.read()) is None:
+                        continue      # not ours; leave it
+            except OSError:
+                continue
+            if not dry:
+                os.remove(stale)
+            pruned.append(stale)
+    return written, pruned
+
+
 # --------------------------------------------------------------------------
 # verbs
 # --------------------------------------------------------------------------
@@ -234,6 +290,32 @@ def cmd_check(argv):
         for s in surfaces:
             if s not in SF.SURFACES:
                 err("unknown surface %r (valid: %s)" % (s, ", ".join(SF.SURFACES)))
+
+        # A `reference:` that resolves to nothing is an error HERE because it
+        # is not one at run time. The model does not fail on a missing
+        # knowledge file -- it searches for a similarly-named document and
+        # reads whatever it finds, which on a real scheduled run meant an
+        # older copy of this same spec sitting in Drive. Nothing in the output
+        # says which document it used. So this pointer has to be validated at
+        # build time or not at all.
+        if "reference" in meta:
+            ref = str(meta.get("reference") or "").strip()
+            known = dict(_canonical_paths())
+            if not ref:
+                err("`reference:` is present but empty -- remove the key or "
+                    "name a doc in prompts/ or references/")
+            elif ref == pid:
+                err("`reference: %s` points at itself" % ref)
+            elif ref not in known:
+                err("`reference: %s` names no file in prompts/ or references/ "
+                    "(known: %s)" % (ref, ", ".join(sorted(known)) or "none"))
+            elif "skill" in surfaces:
+                rkind = (_load(ref)[0].get("kind") or "prompt")
+                if rkind != "reference":
+                    warns.append(
+                        "%s: `reference: %s` has kind %r, not 'reference'; it "
+                        "will still be bundled, but check that is intended"
+                        % (rel, ref, rkind))
 
         # The set comparison that makes frontmatter-as-contract worth it.
         try:
@@ -363,6 +445,30 @@ def cmd_build(argv):
             with open(out, "w", encoding="utf-8") as fh:
                 fh.write(SF.add_marker(text, pid, surface))
             wrote.append(os.path.relpath(out, ROOT))
+
+            # Bundle the reference doc inside the skill directory. A skill that
+            # names a knowledge file it does not carry is only as reliable as
+            # whatever the runtime happens to find under that name -- and a
+            # scheduled run proved that is a stale Drive copy, read without
+            # complaint. Rendering it here makes the skill self-contained, so
+            # there is nothing to upload by hand and nothing to go missing.
+            if surface == "skill" and meta.get("reference"):
+                ref = str(meta["reference"])
+                rmeta, rbody, rrel = _load(ref)
+                rres = E.resolve(ROOT, ref, rmeta, _parse_vars(argv))
+                rtext, rmissing = SF.emit_knowledge(rmeta, rbody,
+                                                    rres.values, ref)
+                if rmissing:
+                    print("  FAIL  %s (bundled into %s): unresolved %s"
+                          % (rrel, pid, ", ".join(rmissing)))
+                    print("          Set them in private/env/%s.env" % ref)
+                    return 1
+                rout = os.path.join(ROOT, "build", "skills", pid,
+                                    SF.BUNDLED_REF_DIR, ref + ".md")
+                os.makedirs(os.path.dirname(rout), exist_ok=True)
+                with open(rout, "w", encoding="utf-8") as fh:
+                    fh.write(SF.add_marker(rtext, ref, "knowledge"))
+                wrote.append(os.path.relpath(rout, ROOT))
         ex = os.path.join(ROOT, "env", pid + ".env.example")
         os.makedirs(os.path.dirname(ex), exist_ok=True)
         with open(ex, "w", encoding="utf-8") as fh:
@@ -409,9 +515,14 @@ def cmd_install(argv):
                 else:
                     state = "hand-edited"
 
-            if state == "same":
+            # NOT `continue` -- a sidecar can change while SKILL.md does not.
+            # Editing only the reference doc leaves SKILL.md byte-identical, so
+            # an early exit here installs the new spec nowhere and reports "ok
+            # (unchanged)" while the stale copy stays live. Fall through to the
+            # bundle sync below; it is idempotent when nothing changed.
+            skill_unchanged = state == "same"
+            if skill_unchanged:
                 print("  ok    %s -> %s (unchanged)" % (pid, tgt))
-                continue
             if state in ("hand-edited", "foreign") and not                     ("--force" in argv or "--adopt" in argv):
                 refused += 1
                 print("  REFUSED %s -> %s" % (pid, tgt))
@@ -440,24 +551,44 @@ def cmd_install(argv):
                 print("          now reconcile it into prompts/%s.md, then "
                       "re-run install" % pid)
                 continue
-            if dry:
+            if skill_unchanged:
+                pass                       # already reported above
+            elif dry:
                 print("  would install %s -> %s (%s)" % (pid, tgt, state))
-                continue
+            else:
+                try:
+                    os.makedirs(os.path.dirname(tgt), exist_ok=True)
+                    with open(tgt, "w", encoding="utf-8") as fh:
+                        fh.write(new)
+                except OSError as exc:
+                    refused += 1
+                    print("  FAILED %s -> %s" % (pid, tgt))
+                    print("          %s" % exc)
+                    print("          The built file is ready at %s --"
+                          % os.path.relpath(srcp, ROOT))
+                    print("          copy it yourself if the permission "
+                          "problem is not fixable.")
+                    continue
+                installed += 1
+                print("  ok    %s -> %s" % (pid, tgt))
+
+            # The sidecars travel with the SKILL.md, in both real and dry runs.
+            # Installing the skill without them would leave it pointing at a
+            # bundled path that does not exist -- worse than not bundling at
+            # all, because the skill now forbids the fallback search too.
             try:
-                os.makedirs(os.path.dirname(tgt), exist_ok=True)
-                with open(tgt, "w", encoding="utf-8") as fh:
-                    fh.write(new)
+                refs, pruned = _sync_bundle(
+                    pid, os.path.dirname(srcp), os.path.dirname(tgt), dry)
             except OSError as exc:
                 refused += 1
-                print("  FAILED %s -> %s" % (pid, tgt))
-                print("          %s" % exc)
-                print("          The built file is ready at %s --"
-                      % os.path.relpath(srcp, ROOT))
-                print("          copy it yourself if the permission problem "
-                      "is not fixable.")
+                print("  FAILED %s bundled references -> %s" % (pid, exc))
                 continue
-            installed += 1
-            print("  ok    %s -> %s" % (pid, tgt))
+            for r in refs:
+                print("  %s %s -> %s"
+                      % ("would bundle" if dry else "ok   ", pid, r))
+            for p in pruned:
+                print("  %s stale bundled doc %s"
+                      % ("would prune" if dry else "pruned", p))
 
     print("\ninstall: %d written, %d refused" % (installed, refused))
     if installed:
