@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import sys
+import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -33,6 +34,7 @@ USAGE = """usage: ./bin/prompt <command> [options]
   build [<id>...]                    compile to build/, regenerate env/*.env.example
   install [<id>...] [--force|--adopt|--dry-run]
                                      build, then copy into ~/.claude/skills/
+  package [<id>...] [--out DIR]      zip a skill for the account catalog upload
   fill <id> [ARG...] [--var K=V] [--stdout]
                                      substitute everything, copy to the clipboard
   env <id> [--resolved]              which layer supplied each variable
@@ -80,7 +82,11 @@ def _load(pid):
 
 
 # Flags that consume the argument after them, so it is not mistaken for an id.
-_VALUE_FLAGS = ("--var",)
+# Anything added here must be registered, or its value is parsed as a prompt
+# id and the command fails with a confusing "no canonical prompt with id
+# '/some/path'". That has now happened twice, once for --var and once for
+# --out.
+_VALUE_FLAGS = ("--var", "--out")
 
 
 def _positional(argv):
@@ -766,6 +772,150 @@ def cmd_install(argv):
     return 1 if refused else 0
 
 
+# The zip format's minimum representable timestamp. Any fixed value works;
+# this one is conventional for reproducible archives.
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def _account_name_problems(name):
+    """Account-catalog rules on a skill `name`, which are stricter than ours.
+
+    Documented at platform.claude.com: 64 chars, lowercase alphanumeric and
+    hyphens only, and no reserved word. None of these are enforced anywhere
+    else in this repo, and all of them reject the upload rather than
+    degrading, so they are worth catching before the file leaves the machine.
+    """
+    problems = []
+    if len(name) > 64:
+        problems.append("name is %d chars, over the 64 limit" % len(name))
+    if not re.fullmatch(r"[a-z0-9-]+", name or ""):
+        problems.append("name %r must be lowercase letters, digits and "
+                        "hyphens only" % name)
+    for word in ("anthropic", "claude"):
+        if word in (name or "").lower():
+            problems.append("name contains the reserved word %r" % word)
+    return problems
+
+
+def cmd_package(argv):
+    """Zip a built skill in the one shape the account catalog accepts.
+
+    This exists because `install` can only finish the local half. The account
+    save is manual, and its required shape is narrow and easy to get wrong in
+    ways that fail late: the skill directory has to be the zip's top-level
+    entry (a SKILL.md at the zip root is rejected), and the bundled
+    references/ has to travel with it or the skill arrives naming a file it
+    does not carry -- which is worse than not bundling, because the generated
+    pointer also forbids the fallback search.
+
+    Deliberately NOT uploading. The catalog has no CLI, and a verb that
+    pretended to would be the same lie as the marker that once reported a
+    stale install as current. This produces an artifact and names the next
+    step.
+    """
+    out_dir = os.path.join(ROOT, "build", "upload")
+    if "--out" in argv:
+        i = argv.index("--out")
+        if i + 1 >= len(argv):
+            sys.stderr.write("--out needs a directory\n")
+            return 2
+        out_dir = os.path.abspath(os.path.expanduser(argv[i + 1]))
+
+    rc = cmd_build(_positional(argv))
+    if rc:
+        return rc
+    print("")
+
+    wrote = skipped = 0
+    for pid in _ids_from(argv):
+        meta, _, rel = _load(pid)
+        surfaces = meta.get("surfaces") or ["skill"]
+        if isinstance(surfaces, str):
+            surfaces = [surfaces]
+        dist = meta.get("distribute") or []
+        if isinstance(dist, str):
+            dist = [dist]
+
+        if "skill" not in surfaces:
+            print("  skip  %s: no skill surface (surfaces: %s)"
+                  % (pid, ",".join(surfaces)))
+            skipped += 1
+            continue
+        if "account" not in dist:
+            print("  skip  %s: no `distribute: account`, so it needs no "
+                  "account save" % pid)
+            skipped += 1
+            continue
+
+        problems = _account_name_problems(str(meta.get("id") or pid))
+        if problems:
+            for p in problems:
+                print("  FAIL  %s: %s" % (rel, p))
+            return 1
+
+        src = _plugin_skill_dir(pid)
+        if not os.path.isfile(os.path.join(src, "SKILL.md")):
+            print("  FAIL  %s: no built SKILL.md at %s"
+                  % (pid, os.path.relpath(src, ROOT)))
+            return 1
+
+        # An invariant assertion, not a user-facing error: `package` builds
+        # first, so a declared reference is always present by the time we get
+        # here. It stays because the thing it guards against -- shipping a
+        # skill that names a spec it does not carry -- is a failure this repo
+        # already had once, and the zip is the last point where it could
+        # leave the machine unnoticed. If build's bundling ever regresses,
+        # this fires instead of the upload silently being wrong.
+        ref = str(meta.get("reference") or "").strip()
+        if ref:
+            want = os.path.join(src, SF.BUNDLED_REF_DIR, ref + ".md")
+            if not os.path.isfile(want):
+                print("  FAIL  %s: `reference: %s` declared but %s is not in "
+                      "the build" % (pid, ref, os.path.relpath(want, ROOT)))
+                return 1
+
+        members = []
+        for dirpath, dirnames, filenames in os.walk(src):
+            dirnames.sort()
+            for fn in sorted(filenames):
+                if fn == ".DS_Store":
+                    continue
+                full = os.path.join(dirpath, fn)
+                # Name every entry under a top-level <id>/ folder. This is the
+                # part the catalog is strict about.
+                arc = os.path.join(pid, os.path.relpath(full, src))
+                members.append((full, arc))
+
+        os.makedirs(out_dir, exist_ok=True)
+        zpath = os.path.join(out_dir, pid + ".zip")
+        # Fixed timestamps so two packages of unchanged content are
+        # byte-identical, matching the reproducibility the rest of build/
+        # already has. A zip that differs every run cannot be diffed, and
+        # "did this change?" is the question you ask right before uploading.
+        with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as zf:
+            for full, arc in members:
+                info = zipfile.ZipInfo(arc, date_time=_ZIP_EPOCH)
+                info.external_attr = 0o644 << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                with open(full, "rb") as fh:
+                    zf.writestr(info, fh.read())
+        wrote += 1
+        print("  ok    %s -> %s  (%d file%s, %.1f KB)"
+              % (pid, os.path.relpath(zpath, ROOT), len(members),
+                 "" if len(members) == 1 else "s",
+                 os.path.getsize(zpath) / 1024.0))
+        for _, arc in members:
+            print("          %s" % arc)
+
+    print("\npackage: %d written, %d skipped" % (wrote, skipped))
+    if wrote:
+        print("\nUpload each zip to your account skill catalog by hand -- "
+              "there is no API for it.\nSee \"Turning a prompt into a "
+              "scheduled job\" in the README. Replace the\nexisting entry "
+              "rather than adding a second one with the same name.")
+    return 0
+
+
 def cmd_fill(argv):
     ids = _ids_from(argv)
     if not ids:
@@ -1152,7 +1302,8 @@ def cmd_doctor(argv):
 
 
 COMMANDS = {"list": cmd_list, "show": cmd_show, "check": cmd_check,
-            "build": cmd_build, "install": cmd_install, "fill": cmd_fill,
+            "build": cmd_build, "install": cmd_install,
+            "package": cmd_package, "fill": cmd_fill,
             "env": cmd_env, "init": cmd_init, "new": cmd_new,
             "scan": cmd_scan, "doctor": cmd_doctor}
 

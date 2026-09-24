@@ -110,7 +110,7 @@ silently-wrong scheduled run.
 | Surface | Built to | Reachable from | Installed by |
 |---|---|---|---|
 | `skill` | `build/plugin/skills/<id>/` | Claude Code, interactively, as `/pl:<id>` | `prompt install` |
-| `skill` (same file) | — | **a scheduled task** | **you, by saving it to the account catalog** |
+| `skill` (same file) | `build/upload/<id>.zip`, by `prompt package` | **a scheduled task** | **you, by uploading that zip to the account catalog** |
 | `instructions` | `build/instructions/<id>.md` | a Project's or a scheduled task's Instructions box | you, by pasting |
 | `knowledge` | `build/knowledge/<id>.md` | Project knowledge | you, by uploading |
 | `cli` | stdout / clipboard | anywhere | `prompt fill` |
@@ -144,9 +144,19 @@ so it does not pretend to.
 What the repo does own is the artifact the task runs. The task's own instructions
 are one line.
 
-1. **Build and save the skill to your account.** `prompt install` puts it in
-   `~/.claude/skills/pl/`, which a scheduled task cannot see. Save the whole
-   directory it names — `build/plugin/skills/<id>/` — including `references/`.
+1. **Package it, then save it to your account.** `prompt install` puts the skill in
+   `~/.claude/skills/pl/`, which a scheduled task cannot see.
+
+   ```bash
+   ./bin/prompt package <id>        # -> build/upload/<id>.zip
+   ```
+
+   Upload that zip in the Claude app's skill settings. `package` exists because the
+   accepted shape is narrow and fails late: the catalog wants a **zip whose
+   top-level entry is the skill folder** (a `SKILL.md` at the zip root is
+   rejected), the bundled `references/` has to travel with it, and the `name` and
+   `description` are held to the account catalog's stricter limits. All of that is
+   checkable locally, so it is checked before the file leaves the machine.
 2. **Create the scheduled task** with its instructions set to little more than:
    `Run the` \`<id>\` `skill, following its instructions exactly.` Add any
    unattended-run notes there rather than in the prompt, since the same skill is
@@ -160,8 +170,9 @@ picks the closest name it can see and proceeds. That happened here — a run gra
 different skill with a similar name and produced output from the wrong one. Nothing
 errored. So "the task ran and produced a brief" is not evidence it ran *your* prompt.
 
-After any prompt change: `build`, `install`, and **re-save to the account**. A local
-install alone leaves the scheduled copy stale, and a stale copy still runs.
+After any prompt change: `build`, `install`, `package`, and **re-upload**. A local
+install alone leaves the scheduled copy stale, and a stale copy still runs. The zip
+is reproducible, so `shasum` tells you whether a re-upload is actually needed.
 
 ### Non-goals
 
@@ -177,13 +188,14 @@ Deliberately absent, so they don't get re-added:
   skills as missing. `distribute: account` drives a reminder, not an assertion — a
   gate that cannot verify should not exist.
 
-## The five commands that matter
+## The six commands that matter
 
 ```bash
 ./bin/prompt list                      # what exists, and what is installed
 ./bin/prompt check                     # validate + smoke-render + scan
 ./bin/prompt build <id>                # compile to build/
 ./bin/prompt install <id>              # install the plugin locally
+./bin/prompt package <id>              # zip it for the account catalog upload
 ./bin/prompt fill <id> "<arg>"         # render one and copy it to the clipboard
 ```
 

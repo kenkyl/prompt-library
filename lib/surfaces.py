@@ -39,10 +39,15 @@ DISTRIBUTE = ("local", "account")
 #
 #   DESC_CAP_LOCAL    Claude Code's documented cap on description +
 #                     when_to_use combined.
-#   DESC_CAP_ACCOUNT  the cap when saving to the account catalog. Measured by
-#                     hitting a real upload rejection, not documented -- so
-#                     treat it as a floor that may be conservative rather than
-#                     an exact figure.
+#   DESC_CAP_ACCOUNT  the cap when saving to the account catalog, documented
+#                     at platform.claude.com. No upload rejection was ever
+#                     observed at this length -- it is the documented figure,
+#                     so do not relax it on the assumption it is a guess.
+#                     Note the Claude Help Center states 200 for the same
+#                     field; that one is demonstrably wrong (a live uploaded
+#                     skill in this account has an 818-char description), and
+#                     it is the number to distrust if the two are ever
+#                     reconciled in the wrong direction.
 #
 # Warn below each so there is room to add `when_to_use` later without a
 # surprise rejection.
