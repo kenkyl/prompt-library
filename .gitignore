@@ -17,3 +17,6 @@ build/
 # silently untracked. Raw originals now live in inbox/, already ignored above.
 __pycache__/
 *.pyc
+
+# Personal project context -- loads automatically, never shared
+CLAUDE.local.md
