@@ -40,6 +40,9 @@ USAGE = """usage: ./bin/prompt <command> [options]
   env <id> [--resolved]              which layer supplied each variable
   init                               fresh clone: env/*.example -> private/env/
   new <id>                           scaffold a canonical file
+  ingest [<file.enex|dir>...] [--force]
+                                     Evernote export -> inbox/staged/, then scan it
+  promote <id>...                    inbox/staged/<id>.md -> prompts/ (never overwrites)
   scan [--staged | --all | --push]   run the sanitization gate
   doctor [--fix]                     diagnose the environment, set up hooks
 
@@ -1100,7 +1103,436 @@ TODO -- be explicit and bounded.
 """
 
 
+# --------------------------------------------------------------------------
+# import: ingest -> inbox/staged/ -> (you edit) -> promote -> prompts/
+# --------------------------------------------------------------------------
 
+_STAGED = os.path.join("inbox", "staged")
+_ID_RX = r"[a-z0-9][a-z0-9-]{1,63}"
+# Left in the body by the adapter wherever content was not carried over.
+_OMIT_MARKER = "<!-- ingest:"
+
+
+def _slugify(title):
+    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:64].strip("-")
+    return s if re.fullmatch(_ID_RX, s) else ("note-" + s).strip("-")[:64]
+
+
+def _source_id(note):
+    # A stable identity for the ORIGINAL note, so re-running ingest skips one
+    # that is already promoted even after its id and title were rewritten --
+    # which is the normal case, since a title naming an account has to change.
+    # A digest rather than the title itself, so committed provenance carries
+    # nothing the gate would have to catch.
+    import hashlib
+    return hashlib.sha256(("%s\0%s" % (note.title, note.created))
+                          .encode("utf-8")).hexdigest()[:12]
+
+
+def _promoted_source_ids():
+    out = {}
+    for cid, rel in _canonical_paths():
+        try:
+            meta, _, _ = _load(cid)
+        except SystemExit:
+            continue
+        if meta.get("source-id"):
+            out[str(meta["source-id"])] = rel
+    return out
+
+
+def _staged_text(pid, note):
+    lines = ["---",
+             "id: %s" % pid,
+             "title: %s" % FM._emit_scalar(note.title),
+             "description: TODO -- WHEN to use it, not just what it is. "
+             "promote refuses while this says TODO.",
+             "kind: prompt",
+             "status: draft",
+             "surfaces: [skill]"]
+    # Pre-declare every {{NAME}} the note already uses. Several originals were
+    # written as templates, and without this each one fails `check` on its
+    # first run for a reason that has nothing to do with its content.
+    names = T.tokens(note.body)
+    if names:
+        lines.append("vars:")
+        for n in names:
+            lines += ["  - name: %s" % n,
+                      "    required: true",
+                      "    describe: TODO",
+                      "    example: \"<%s>\"" % n.lower().replace("_", "-")]
+    else:
+        lines.append("vars: []")
+    lines.append("source: evernote")
+    lines.append("source-id: %s" % _source_id(note))
+    if note.created:
+        lines.append("source-created: %s" % note.created)
+    if note.updated:
+        lines.append("source-updated: %s" % note.updated)
+    lines.append("---")
+    return "\n".join(lines) + "\n\n" + note.body
+
+
+# Words that are capitalised for grammatical reasons and would otherwise fill
+# the candidate list. Deliberately generic -- this file is committed, and a
+# list naming anything specific would be a list of what is being hidden.
+_STOP = set("""I A An The This That These Those It Its If When Then Else And Or
+But Not No Yes For From With Without Into Onto Over Under Of On In At To By As
+Is Are Be Do Does Use Each Every Any All Some None Only Also Never Always You
+Your We Our They Their He She Monday Tuesday Wednesday Thursday Friday Saturday
+Sunday January February March April May June July August September October
+November December TODO OK""".split())
+_WORD_RX = re.compile(r"[A-Za-z][A-Za-z0-9_&'-]*[A-Za-z0-9]")
+# What may precede the first word of a line and still leave it "starting" the
+# line: markdown list/heading/quote/table syntax, numbering, todo boxes.
+_LEAD_RX = re.compile(r"^(?:[\s#>*|`\d.)-]|\[[ xX]\])*")
+
+
+def _candidate_source(text):
+    """The part of a staged file a human wrote: its title and body.
+
+    Not the frontmatter ingest generated, whose TODO text and
+    CUSTOMER_NAME-style declarations otherwise top the list.
+    """
+    try:
+        meta, body, _ = FM.parse(text)
+    except FM.FrontmatterError:
+        return text
+    return "%s\n%s" % (meta.get("title") or "", body)
+
+
+def _denylist_candidates(texts, deny):
+    """Capitalised terms worth a human look, grouped by how they were seen.
+
+    Heuristic, and says so in the file it writes: a term qualifies only if it
+    never appears in lowercase anywhere in the batch, which drops ordinary
+    words at a sentence start but also hides a customer written in lowercase,
+    in a URL, or inside a hostname. It narrows the reading; it does not
+    replace it.
+    """
+    lower_seen, stats = set(), {}
+    known = set(e.term for e in deny)
+    for pid, text in texts:
+        text = _candidate_source(text)
+        text = re.sub(r"\{\{[^{}]*\}\}", " ", text)        # our own tokens
+        text = re.sub(r"https?://\S+", " ", text)
+        for line in text.split("\n"):
+            run, run_mid = [], False
+            prev_end, sentence_start = 0, True
+            for m in _WORD_RX.finditer(line):
+                w = m.group(0)
+                gap = line[prev_end:m.start()]
+                if prev_end == 0:
+                    sentence_start = not _LEAD_RX.sub("", gap)
+                elif re.search(r"[.!?:|]\s*$", gap):
+                    sentence_start = True
+                prev_end = m.end()
+                if w[0].islower():
+                    lower_seen.add(w.lower())
+                cap = w[0].isupper() and w not in _STOP
+                # A run continues only across a single space, so a two-word
+                # name is one candidate but two names split by a comma are two.
+                if cap and run and gap == " ":
+                    run.append(w)
+                    continue
+                if run:
+                    _note_run(stats, run, run_mid, pid)
+                run, run_mid = ([w], not sentence_start) if cap else ([], False)
+                sentence_start = False
+            if run:
+                _note_run(stats, run, run_mid, pid)
+    out = {"proper": [], "acronym": [], "start": []}
+    for term, (pids, mid) in stats.items():
+        if term in known or any(w.lower() in lower_seen for w in term.split()
+                                if not w.isupper()):
+            continue
+        group = ("acronym" if term.isupper() else
+                 "proper" if mid else "start")
+        out[group].append((len(pids), term))
+    return {k: sorted(v, key=lambda x: (-x[0], x[1])) for k, v in out.items()}
+
+
+def _note_run(stats, run, mid, pid):
+    # "Mention <Some Company>" at a sentence start is a verb glued to a name.
+    # Record the tail as a mid-sentence run so the name is not filed under
+    # "mostly verbs" and skimmed past.
+    if not mid and len(run) > 1:
+        _note_run(stats, run[:1], False, pid)
+        _note_run(stats, run[1:], True, pid)
+        return
+    term = " ".join(run)
+    pids, seen_mid = stats.get(term, (set(), False))
+    pids.add(pid)
+    stats[term] = (pids, seen_mid or mid)
+
+
+def _write_candidates(groups, deny):
+    path = os.path.join(ROOT, "inbox", "denylist-candidates.txt")
+    labels = (("proper", "Capitalised mid-sentence -- the likeliest account "
+                         "and people names"),
+              ("acronym", "All-caps -- tickers and account abbreviations hide "
+                          "here, among ordinary jargon"),
+              ("start", "Only ever seen starting a line or sentence -- "
+                        "mostly verbs, occasionally a name"))
+    out = ["# Denylist CANDIDATES from the last `./bin/prompt ingest`. This is not",
+           "# a denylist and nothing reads it.",
+           "#",
+           "# A term is listed if it is capitalised, never appears in lowercase in",
+           "# the staged notes, and is not already in private/denylist.txt (%d "
+           "entries)." % len(deny),
+           "# It MISSES a name written in lowercase, in a URL or hostname, or",
+           "# paraphrased. Read the notes too.",
+           "#",
+           "# Copy the real ones into private/denylist.txt without the leading '# '.",
+           "# Tiers: strict (always a hit), word (a hit as a whole word), review",
+           "# (reported, never blocks). Then re-run ingest to rescan.",
+           ""]
+    for key, label in labels:
+        rows = groups.get(key) or []
+        out.append("## %s (%d)" % (label, len(rows)))
+        for n, term in rows:
+            out.append("# word | %s | seen in %d note%s"
+                       % (term, n, "" if n == 1 else "s"))
+        out.append("")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out))
+    return os.path.relpath(path, ROOT), sum(len(v) for v in groups.values())
+
+
+def cmd_ingest(argv):
+    """Evernote export -> inbox/staged/, then scan everything staged.
+
+    Stops at inbox/. Nothing here writes to prompts/ or references/; that is
+    `promote`, run by hand once a staged note has been read and cleaned.
+    """
+    from lib.adapters import enex as ENEX
+    force = "--force" in argv
+    srcs = _positional(argv) or [os.path.join(ROOT, "inbox", "enex")]
+    files = []
+    for s in srcs:
+        if os.path.isdir(s):
+            files += sorted(os.path.join(s, f) for f in os.listdir(s)
+                            if f.lower().endswith(".enex"))
+        elif os.path.isfile(s):
+            files.append(s)
+        else:
+            sys.stderr.write("no such file or directory: %s\n" % s)
+            return 2
+    if not files:
+        print("No .enex files in %s.\n\nIn Evernote: select the notes, then "
+              "File > Export Notes... > ENEX,\nand save into inbox/enex/ "
+              "(gitignored, and blocked by the gate by name)."
+              % ", ".join(os.path.relpath(s, ROOT) for s in srcs))
+        return 1
+
+    try:
+        deny, allow = S.load_denylist(ROOT), S.load_allow(ROOT)
+    except ValueError as exc:
+        sys.stderr.write("%s\n" % exc)
+        return 1
+    promoted = _promoted_source_ids()
+    canonical = dict(_canonical_paths())
+    staged_dir = os.path.join(ROOT, _STAGED)
+    os.makedirs(staged_dir, exist_ok=True)
+    # Match staged files to notes by source-id, NEVER by filename. Filenames
+    # fail both ways: a staged file you renamed to drop an account name would
+    # be re-staged under the old name, and a hand-made file that happens to
+    # share a note's slug would be taken for that note -- scanned as it,
+    # reported "kept", and overwritten by --force.
+    by_sid, occupied = {}, set()
+    for fn in sorted(os.listdir(staged_dir)):
+        if not fn.endswith(".md"):
+            continue
+        occupied.add(fn[:-3])
+        with open(os.path.join(staged_dir, fn), "r", encoding="utf-8",
+                  errors="replace") as fh:
+            m = re.search(r"^source-id:\s*([0-9a-f]{12})\s*$",
+                          fh.read().split("\n---", 1)[0], re.MULTILINE)
+        if m:
+            by_sid.setdefault(m.group(1), fn[:-3])
+
+    rows, texts, taken, all_found = [], [], set(), []
+    for f in files:
+        try:
+            notes = ENEX.parse(f)
+        except ENEX.EnexError as exc:
+            print("  FAIL  %s" % exc)
+            return 1
+        for note in notes:
+            sid = _source_id(note)
+            if sid in promoted:
+                rows.append(("-", "already promoted as %s -- that copy is now "
+                                  "the source of truth" % promoted[sid], None))
+                continue
+            base = _slugify(note.title)
+            pid = by_sid.get(sid)
+            if pid is None:
+                pid, n = base, 2
+                while pid in taken or pid in canonical or pid in occupied:
+                    pid = "%s-%d" % (base[:60], n)
+                    n += 1
+            else:
+                base = pid                 # yours, possibly renamed; not a clash
+            taken.add(pid)
+            rel = os.path.join(_STAGED, pid + ".md")
+            path = os.path.join(ROOT, rel)
+            new = _staged_text(pid, note)
+            if not os.path.exists(path):
+                state = "staged"
+            else:
+                with open(path, "r", encoding="utf-8") as fh:
+                    cur = fh.read()
+                # A staged file is where the cleanup happens, so an edit there
+                # is work in progress. Re-running ingest -- which you do after
+                # every denylist change -- must not throw it away.
+                state = ("unchanged" if cur == new else
+                         "restaged (--force)" if force else "kept")
+            if state in ("staged", "restaged (--force)"):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(new)
+            with open(path, "r", encoding="utf-8") as fh:
+                text = fh.read()
+            texts.append((pid, text))
+            found = S.scan_text(rel, text, allow, deny)
+            all_found += found
+            note_bits = []
+            if state == "kept":
+                note_bits.append("edited since ingest, left alone "
+                                 "(--force discards the edit)")
+            if pid != base:
+                note_bits.append("id %r was taken" % base)
+            if note.omitted:
+                note_bits.append("not carried over: " + ", ".join(
+                    sorted(set(note.omitted))))
+            if note.tags:
+                note_bits.append("tags: " + ", ".join(note.tags))
+            rows.append((pid, state, (found, note_bits)))
+
+    print("")
+    for pid, state, extra in rows:
+        if extra is None:
+            print("  skip  %s" % state)
+            continue
+        found, bits = extra
+        block = sum(1 for x in found if x.severity == P.BLOCK and not x.suppression)
+        review = sum(1 for x in found if x.severity == P.REVIEW and not x.suppression)
+        print("  %-8s %-40s %s" % (state.split(" ")[0], pid,
+              "clean" if not (block or review) else
+              "%d blocking, %d review" % (block, review)))
+        for b in bits:
+            print("           %s" % b)
+
+    if all_found:
+        S.report(all_found, "staged scan")
+
+    cpath, ccount = _write_candidates(_denylist_candidates(texts, deny), deny)
+    staged = [r for r in rows if r[2] is not None]
+    print("\ningest: %d note%s in %s, %d skipped as already promoted."
+          % (len(staged), "" if len(staged) == 1 else "s", _STAGED,
+             len(rows) - len(staged)))
+    print("\nThe denylist has %d entr%s. The scan above is only as good as "
+          "that list --\nthe pattern families do not know account names. "
+          "%d candidate term%s are in\n  %s\nReview them into "
+          "private/denylist.txt, then re-run ingest to rescan."
+          % (len(deny), "y" if len(deny) == 1 else "ies",
+             ccount, "" if ccount == 1 else "s", cpath))
+    print("\nThen per note: edit %s/<id>.md -- replace names with variables,\n"
+          "write the description -- and ./bin/prompt promote <id>." % _STAGED)
+    return 0
+
+
+def cmd_promote(argv):
+    """inbox/staged/<id>.md -> prompts/<id>.md (or references/, by `kind:`).
+
+    The one door into canonical, and it is a move, not a copy: two live copies
+    of a prompt is the drift this repo exists to end. Refuses to overwrite,
+    and refuses anything the gate would block -- checked here, against the
+    destination path, so a note is never promoted just to fail its commit.
+    """
+    ids = _positional(argv)
+    if not ids:
+        staged = sorted(f[:-3] for f in (os.listdir(os.path.join(ROOT, _STAGED))
+                        if os.path.isdir(os.path.join(ROOT, _STAGED)) else [])
+                        if f.endswith(".md"))
+        sys.stderr.write("promote needs an id. Staged: %s\n"
+                         % (", ".join(staged) or "(none)"))
+        return 2
+    try:
+        deny, allow = S.load_denylist(ROOT), S.load_allow(ROOT)
+    except ValueError as exc:
+        sys.stderr.write("%s\n" % exc)
+        return 1
+    canonical = dict(_canonical_paths())
+    moved = []
+    for pid in ids:
+        src_rel = os.path.join(_STAGED, pid + ".md")
+        src = os.path.join(ROOT, src_rel)
+        if not os.path.isfile(src):
+            print("  FAIL  %s: no such staged file" % src_rel)
+            return 1
+        with open(src, "r", encoding="utf-8") as fh:
+            text = fh.read()
+        try:
+            meta, body, _ = FM.parse(text)
+        except FM.FrontmatterError as exc:
+            print("  FAIL  %s: %s" % (src_rel, exc))
+            return 1
+
+        problems = []
+        if not re.fullmatch(_ID_RX, pid):
+            problems.append("%r is not a valid id (lowercase letters, digits, "
+                            "hyphens; 2-64 chars)" % pid)
+        if meta.get("id") != pid:
+            problems.append("frontmatter id is %r but the filename says %r -- "
+                            "rename both together" % (meta.get("id"), pid))
+        desc = str(meta.get("description") or "").strip()
+        if not desc or desc.upper().startswith("TODO"):
+            problems.append("`description:` is still TODO. It decides when "
+                            "Claude invokes the skill, so write it first")
+        if _OMIT_MARKER in body:
+            problems.append("the body still has %d `%s ... -->` marker%s where "
+                            "an attachment or encrypted section was dropped. "
+                            "Recreate what it held, or delete the marker"
+                            % (body.count(_OMIT_MARKER), _OMIT_MARKER,
+                               "" if body.count(_OMIT_MARKER) == 1 else "s"))
+        kind = meta.get("kind") or "prompt"
+        dest_dir = "references" if kind == "reference" else "prompts"
+        dest_rel = os.path.join(dest_dir, pid + ".md")
+        # Ids share one namespace across both directories -- `reference:` and
+        # every verb look them up by id alone.
+        if pid in canonical:
+            problems.append("%s already exists. promote never overwrites a "
+                            "canonical file; merge by hand, or rename this "
+                            "one" % canonical[pid])
+        for p in problems:
+            print("  FAIL  %s: %s" % (src_rel, p))
+
+        # Scan as the destination, so scan/allow.txt globs apply exactly as
+        # they will at commit time.
+        found = S.scan_text(dest_rel, text, allow, deny)
+        blocking = [x for x in found if x.severity == P.BLOCK and not x.suppression]
+        if blocking:
+            S.report(found, "promote scan")
+            print("  FAIL  %s: the gate would block this commit. Fix it in "
+                  "the staged file,\n        where a mistake is still "
+                  "private." % src_rel)
+        if problems or blocking:
+            print("\npromote: %s NOT promoted." % pid)
+            return 1
+
+        os.makedirs(os.path.join(ROOT, dest_dir), exist_ok=True)
+        os.rename(src, os.path.join(ROOT, dest_rel))
+        canonical[pid] = dest_rel
+        moved.append(pid)
+        print("  moved %s -> %s  (scanned against %d denylist entr%s)"
+              % (src_rel, dest_rel, len(deny), "y" if len(deny) == 1 else "ies"))
+
+    print("")
+    rc = cmd_check(moved)
+    if rc:
+        print("\nPromoted, but check is failing -- fix it in place. The file "
+              "is canonical now,\nso edit it there, not in inbox/.")
+    return rc
 
 
 # --------------------------------------------------------------------------
@@ -1305,6 +1737,7 @@ COMMANDS = {"list": cmd_list, "show": cmd_show, "check": cmd_check,
             "build": cmd_build, "install": cmd_install,
             "package": cmd_package, "fill": cmd_fill,
             "env": cmd_env, "init": cmd_init, "new": cmd_new,
+            "ingest": cmd_ingest, "promote": cmd_promote,
             "scan": cmd_scan, "doctor": cmd_doctor}
 
 

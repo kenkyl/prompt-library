@@ -35,7 +35,7 @@ current known gaps.
 
 ```
 ./bin/prompt list | show | check | build | install | package | fill | env
-                  | init | new | scan | doctor
+                  | init | new | ingest | promote | scan | doctor
 ```
 
 Always `./bin/prompt`, never `python3 bin/prompt` — the user's shell aliases

@@ -1199,7 +1199,156 @@ cd ~/Workspace/prompt-library && rm -rf /tmp/pl-clone
 
 ---
 
-## Part 8 — Final state check
+## Part 8 — Import: `ingest` and `promote`
+
+Runs in a scratch clone with a **throwaway denylist**, so neither your real
+`private/denylist.txt` nor your real `inbox/` is touched. The two fictional
+account names are assembled at runtime, as in 6.1, so this guide never contains
+them whole — otherwise `check`'s worktree scan in the clone flags this file
+against the throwaway denylist.
+
+### 8.1 A clone, a denylist, an export
+
+```bash
+rm -rf /tmp/pl-import && git clone -q ~/Workspace/prompt-library /tmp/pl-import
+cd /tmp/pl-import && mkdir -p private inbox/enex
+A="Ini""tech"; B="Globex Corp""oration"
+printf 'word | %s\nstrict | %s\n' "$A" "$B" > private/denylist.txt
+cat > inbox/enex/fixture.enex <<EOF
+<?xml version="1.0"?>
+<!DOCTYPE en-export SYSTEM "http://xml.evernote.com/pub/evernote-export4.dtd">
+<en-export>
+<note><title>$A Renewal Prep</title><created>20250314T091500Z</created>
+<content><![CDATA[<en-note><div><b>Role</b></div><div>You are an SA for {{CUSTOMER_NAME}}. Our champion at $A is Bill Lumbergh.</div><div><br/></div>
+<ol><li>Pull the open opps</li><li>Rank them<ul><li>by ARR</li></ul></li></ol>
+<div><en-todo/>ping $B too</div>
+<div style="-en-codeblock: true;"><div>SELECT Id</div><div>  FROM Opportunity</div></div>
+<div><en-media type="image/png" hash="abc"/></div></en-note>]]></content></note>
+<note><title>Weekly status email</title><created>20240101T000000Z</created>
+<content><![CDATA[<en-note><div>Write a status email.</div><div>Keep it short.</div></en-note>]]></content></note>
+</en-export>
+EOF
+```
+
+### 8.2 Ingest
+
+```bash
+./bin/prompt ingest; echo "exit=$?"
+```
+
+```
+  staged   initech-renewal-prep                     4 blocking, 0 review
+           not carried over: an attachment (image/png)
+  staged   weekly-status-email                      clean
+
+BLOCKING (4)
+  inbox/staged/initech-renewal-prep.md:0  word-in-path   inbox/staged/initech-renewal-prep.md
+  inbox/staged/initech-renewal-prep.md:3  word           <matched text>
+  ...
+staged scan: 4 blocking, 0 review, 0 allowed
+
+Nothing is blocked yet: inbox/ is never committed. promote will refuse these. ...
+ingest: 2 notes in inbox/staged, 0 skipped as already promoted.
+...
+exit=0
+```
+
+`exit=0`: findings in staging are expected — staging is where they get fixed.
+Note the `word-in-path` hit: the denylist is case-sensitive, and the id is
+lowercase, so without a path check the account name would ship as the
+filename, the skill name and the slash command.
+
+```bash
+sed -n '/^---$/,$p' inbox/staged/initech-renewal-prep.md | tail -20
+```
+
+Evernote's one-`<div>`-per-line layout comes out as lines, not paragraphs; the
+code block is fenced; the sublist sits under `2. ` at three spaces; the todo is
+`[ ]`; the attachment is an `<!-- ingest: ... -->` marker. `CUSTOMER_NAME` is
+already declared under `vars:`.
+
+```bash
+grep '^# word' inbox/denylist-candidates.txt | head -5
+```
+
+`Bill Lumbergh` is listed — a name the denylist did not know. The list is a
+heuristic and says so at the top of the file.
+
+### 8.3 Promote refuses a dirty note
+
+```bash
+./bin/prompt promote initech-renewal-prep; echo "exit=$?"
+```
+
+```
+  FAIL  ...: `description:` is still TODO. ...
+  FAIL  ...: the body still has 1 `<!-- ingest: ... -->` marker ...
+  ...
+  FAIL  ...: the gate would block this commit. ...
+promote: initech-renewal-prep NOT promoted.
+exit=1
+```
+
+Every reason at once, like the scan.
+
+### 8.4 Re-ingest keeps your edits
+
+```bash
+sed -i '' 's/^description: TODO.*/description: Draft a weekly status email. Use when asked for a status update./' \
+  inbox/staged/weekly-status-email.md
+./bin/prompt ingest | grep -E '^  (kept|unchanged)'
+```
+
+```
+  unchanged initech-renewal-prep                     4 blocking, 0 review
+  kept     weekly-status-email                      clean
+```
+
+**Proves:** re-running ingest after a denylist change rescans without throwing
+away cleanup work. `--force` is the only way to discard it.
+
+### 8.5 Promote, then re-ingest
+
+```bash
+./bin/prompt promote weekly-status-email; echo "exit=$?"
+ls inbox/staged/ prompts/ | grep weekly
+./bin/prompt ingest | grep skip
+```
+
+```
+  moved inbox/staged/weekly-status-email.md -> prompts/weekly-status-email.md  (scanned against 2 denylist entries)
+...
+check: 0 errors, 2 warnings, 0 info
+...
+exit=0
+weekly-status-email.md
+  skip  already promoted as prompts/weekly-status-email.md -- that copy is now the source of truth
+```
+
+It **moved** — one copy, not two. And the next ingest skips the note by a
+digest of its original title and date, so this still works after the id and
+title are rewritten.
+
+### 8.6 Promote never overwrites
+
+```bash
+sed 's/^id: .*/id: smoke-test/' inbox/staged/initech-renewal-prep.md > inbox/staged/smoke-test.md
+./bin/prompt promote smoke-test | grep 'already exists'
+```
+
+```
+  FAIL  inbox/staged/smoke-test.md: prompts/smoke-test.md already exists. promote never overwrites a canonical file; ...
+```
+
+### 8.7 Clean up
+
+```bash
+cd ~/Workspace/prompt-library && rm -rf /tmp/pl-import
+```
+
+---
+
+## Part 9 — Final state check
 
 ```bash
 git status --short
@@ -1240,6 +1389,8 @@ Expect `0 failures`, `exit=0`.
 | `scan` | nothing blocking | blocking findings | unknown mode |
 | `doctor` | no failures | at least one failure | — |
 | `new` | created | file already exists | bad id, or wrong arg count |
+| `ingest` | staged (findings in staging are not failures) | no `.enex` found, or one does not parse | a named path does not exist |
+| `promote` | moved, and `check` passes | refused (TODO description, omission marker, blocking scan, id taken), or `check` fails after the move | no id given |
 | `show` | rendered | unresolved variable | not exactly one id |
 
 ---
@@ -1254,9 +1405,5 @@ Expect `0 failures`, `exit=0`.
 - **`--resolved` on `env`, and the whole of `build/`, contain real private
   values by design.** `build/` is gitignored unconditionally for that reason.
   Don't paste either into a ticket or a chat.
-- **The README's "One writer" section mentions `ingest` and `promote` commands.**
-  Neither exists in `bin/prompt` today; the implemented verbs are `list`, `show`,
-  `check`, `build`, `install`, `package`, `fill`, `env`, `init`, `new`, `scan`,
-  `doctor`. Worth reconciling one way or the other.
 - **`./bin/prompt check` on a fresh clone warns about a missing Role section in
   `sa-forecast-brief`.** It is a house-style nag with no effect on output.

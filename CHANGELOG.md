@@ -1,5 +1,52 @@
 # Changelog
 
+## Phase 4 — 2026-09-25
+
+The import path: Evernote export in, canonical prompt out, with the gate
+run at the stage where a mistake is still private.
+
+**Added**
+
+- `lib/adapters/enex.py`: stdlib `.enex`/ENML → markdown. It follows
+  Evernote's actual layout (one `<div>` per line, `<div><br/></div>` for a
+  blank line) rather than generic HTML, and handles code blocks, nested
+  lists, todos, tables and links. Attachments and encrypted sections leave an
+  `<!-- ingest: ... -->` marker.
+- `ingest`: stages each note into `inbox/staged/` with a draft frontmatter,
+  pre-declaring any `{{NAME}}` tokens the note already uses. It scans
+  everything it staged and writes `inbox/denylist-candidates.txt`. It never
+  overwrites a staged file you have edited, and it skips notes already
+  promoted.
+- `promote`: the one door into `prompts/`/`references/`. It moves the file
+  rather than copying it, never overwrites, and refuses a TODO description,
+  a leftover omission marker, or anything the gate would block.
+
+**Fixed**
+
+- **The gate was blind to filenames.** Denylist matching is case-sensitive
+  and content-only, so a lowercase id containing an account name passed
+  every hook, and that id is also the skill name and slash command. Paths
+  are now matched against each term as a slug, in every scan mode.
+- Found while re-verifying before the real import, and fixed before it ran:
+  - Current Evernote wraps each list item's text in a `<div>` and writes
+    checklists as a styled `<ul>`. Every bullet came out as a bare `-` with
+    its text on the next line, and checkboxes were lost.
+  - `ingest` matched staged files to notes by filename. A renamed staged
+    file (which the path check forces whenever an id contains an account
+    name) was re-staged under its old name. Worse, a note whose slug matched
+    a hand-made staged file was taken to *be* that file, and `--force` would
+    have overwritten it. Staged files are now matched by `source-id`.
+
+**Known gaps**
+
+- **The 13 Evernote notes are still not imported.** The tooling exists; the
+  export and the denylist population are manual and not done.
+- `private/denylist.txt` is still a 3-entry stub. `ingest` now makes it
+  easier to fill, but cannot fill it for you.
+- The candidate list is a heuristic. It misses a name written in lowercase,
+  inside a URL or hostname, or appearing only at a sentence start alongside
+  many ordinary verbs.
+
 ## Phase 3 — 2026-09-23
 
 Packaged as a plugin, and wrote down two things about Claude's surfaces that

@@ -184,8 +184,42 @@ def scan_text(path: str, text: str, allow: List[AllowEntry],
                 fix=entry.note or "Replace with a variable, or re-tier it in "
                                   "private/denylist.txt if this is a false positive."))
 
+    findings.extend(scan_path_denylist(norm, denylist))
     findings.sort(key=lambda f: (f.path, f.line, f.rule))
     return findings
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
+def scan_path_denylist(path: str, denylist: List[DenyEntry]) -> List[Finding]:
+    """Denylist terms in the PATH, matched as slugs.
+
+    The content match above is case-sensitive, which is right for prose and
+    blind to filenames: a prompt id is lowercase-hyphenated, so a note titled
+    after an account becomes prompts/<account>-renewal.md with `id:
+    <account>-renewal`, and \\bAccount\\b matches neither. The id is also the
+    skill name and the slash command, so a name there is published three ways.
+    Comparing slugs to slugs closes that without making prose matching
+    case-insensitive, which is unusable (see the comment above).
+    """
+    target = _slug(path)
+    out: List[Finding] = []
+    for entry in denylist:
+        term = _slug(entry.term)
+        if not term:
+            continue
+        if re.search(r"(?:^|-)%s(?:-|$)" % re.escape(term), target):
+            out.append(Finding(
+                path=path, line=0,
+                severity=P.BLOCK if entry.tier in ("strict", "word") else P.REVIEW,
+                source="denylist", rule=entry.tier + "-in-path", matched=path,
+                why="A denylisted term (%s tier) is in the filename. For a "
+                    "prompt that is also its id, skill name and slash command."
+                    % entry.tier,
+                fix="Rename the file and its `id:` to something generic."))
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -356,7 +390,10 @@ def report(findings: List[Finding], stage: str) -> int:
     if blocking:
         halted = {"pre-commit scan": "Nothing was committed.",
                   "pre-push scan": "NOTHING WAS PUSHED.",
-                  "worktree scan": "Not blocking anything -- this was a manual scan."}
+                  "worktree scan": "Not blocking anything -- this was a manual scan.",
+                  "staged scan": "Nothing is blocked yet: inbox/ is never "
+                                 "committed. promote will refuse these.",
+                  "promote scan": "Nothing was promoted."}
         print("\n%s Fix the blocking findings above, or -- if one is a false\n"
               "positive -- add a path-scoped entry to scan/allow.txt with a reason,\n"
               "or re-tier the term in private/denylist.txt."
