@@ -23,6 +23,19 @@ run at the stage where a mistake is still private.
 
 **Fixed**
 
+- **Two customer account names reached the public repo, in Phase 2.** A
+  styling note in the forecast reference doc used real deal counts to explain
+  account chips, and the gate passed it because the denylist was still a stub.
+  Both `source.origin:` fields also carried the internal territory code. All
+  three lines were rewritten out of every commit and the branches
+  force-pushed; the populated denylist now blocks them. The old commits stay
+  reachable on GitHub through the merged PRs' refs until GitHub purges them.
+- **Denylist terms were missed when joined by underscores.** `\b` counts `_`
+  as a word character, so a term inside an attachment name like
+  `<account>_weekly_sync.pdf` never matched, and a multi-word term matched
+  only with a single space. Terms are now bounded by letters and digits, and
+  the space in a multi-word term also matches `_`, `-` or a line break.
+  Matching is still case-sensitive.
 - **The gate was blind to filenames.** Denylist matching is case-sensitive
   and content-only, so a lowercase id containing an account name passed
   every hook, and that id is also the skill name and slash command. Paths
@@ -39,10 +52,21 @@ run at the stage where a mistake is still private.
 
 **Known gaps**
 
-- **The 13 Evernote notes are still not imported.** The tooling exists; the
-  export and the denylist population are manual and not done.
-- `private/denylist.txt` is still a 3-entry stub. `ingest` now makes it
-  easier to fill, but cannot fill it for you.
+- **The 16 exported Evernote notes are staged and cleaned but not
+  promoted.** Nine are ready; the rest still need a `description:`, and one
+  is a newer revision of `customer-account-intelligence` to merge by hand
+  rather than promote.
+- **`init` never creates `private/env/_shared.env`.** Territory and roster
+  values resolve from there, so they are set once and fill in automatically,
+  but a fresh clone only gets the per-prompt files and has to repeat
+  `TERRITORIES` and `SA_TEAM` in each. `init` should also generate
+  `_shared.env`, listing every variable declared by two or more prompts.
+- The `cluster-kaas` pattern in `lib/patterns.py` names one customer's
+  hostname prefix. The file is excluded from its own scan, so the gate cannot
+  see this. That prefix belongs in the denylist, which already has it.
+- Denylist matching is case-sensitive, so a customer name written in
+  lowercase in prose is not caught unless that casing is listed too, and some
+  names collide with English words in lowercase.
 - The candidate list is a heuristic. It misses a name written in lowercase,
   inside a URL or hostname, or appearing only at a sentence start alongside
   many ordinary verbs.

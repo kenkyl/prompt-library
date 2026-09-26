@@ -170,7 +170,7 @@ def scan_text(path: str, text: str, allow: List[AllowEntry],
     # matches nothing at all.
     masked: Set[Tuple[int, int]] = set()
     for entry in denylist:
-        rx = re.compile(r"\b%s\b" % re.escape(entry.term))
+        rx = _term_rx(entry.term)
         for m in rx.finditer(text):
             if any(m.start() < e and m.end() > s for s, e in masked):
                 continue   # inside an already-matched longer term
@@ -187,6 +187,18 @@ def scan_text(path: str, text: str, allow: List[AllowEntry],
     findings.extend(scan_path_denylist(norm, denylist))
     findings.sort(key=lambda f: (f.path, f.line, f.rule))
     return findings
+
+
+def _term_rx(term: str) -> "re.Pattern[str]":
+    """A denylist term bounded by letters and digits, not by \\b.
+
+    \\b counts `_` as a word character, so \\bAcme\\b missed Acme_Future_State.pptx
+    and a multi-word name joined as Acme_Corp_weekly_sync.pdf -- attachment
+    names, which is exactly where account names hide in exported notes. The
+    space inside a multi-word term likewise matches `_`, `-`, or a line break.
+    """
+    body = r"[\s_-]+".join(re.escape(w) for w in term.split())
+    return re.compile(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % body)
 
 
 def _slug(s: str) -> str:
@@ -206,10 +218,14 @@ def scan_path_denylist(path: str, denylist: List[DenyEntry]) -> List[Finding]:
     """
     target = _slug(path)
     out: List[Finding] = []
+    seen: Set[str] = set()
     for entry in denylist:
         term = _slug(entry.term)
-        if not term:
+        # Two casings of one term (listed so prose matching catches both)
+        # share a slug; report the path once.
+        if not term or term in seen:
             continue
+        seen.add(term)
         if re.search(r"(?:^|-)%s(?:-|$)" % re.escape(term), target):
             out.append(Finding(
                 path=path, line=0,

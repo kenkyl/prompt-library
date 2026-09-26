@@ -359,7 +359,9 @@ suppress a denylist hit, since naming the term in a committed file would
 publish the thing the denylist exists to hide.
 
 Denylist matching is case-sensitive in content, which is what keeps it usable on
-prose. It is blind to filenames, though: a prompt id is lowercase, so a note named
+prose; list each casing that occurs. A term is bounded by letters and digits, not
+by `_` or `-`, so it is found inside attachment names, and the space in a
+multi-word term also matches `_`, `-` or a line break. It is blind to filenames, though: a prompt id is lowercase, so a note named
 after an account would ship that name as the filename, the skill name and the slash
 command. Paths are therefore also matched against each denylist term as a
 lowercase-hyphenated slug.
