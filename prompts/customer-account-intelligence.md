@@ -55,6 +55,9 @@ source:
   system: local
   origin: customer-account-intelligence.md
   imported: 2026-09-15
+# The same template was also exported from Evernote. This tells `ingest` that
+# note is already here, so it is skipped instead of re-staged as a new prompt.
+source-id: c7c6070afd9e
 ---
 
 # Project Instructions — {{COMPANY}} Account Intelligence: {{CUSTOMER_NAME}}

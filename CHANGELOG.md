@@ -52,10 +52,16 @@ run at the stage where a mistake is still private.
 
 **Known gaps**
 
-- **The 16 exported Evernote notes are staged and cleaned but not
-  promoted.** Nine are ready; the rest still need a `description:`, and one
-  is a newer revision of `customer-account-intelligence` to merge by hand
-  rather than promote.
+- **The Evernote import is not finished.** Of the 16 exported notes, nine
+  are promoted and three more (`stalled-contact-follow-ups`,
+  `sa-use-case-research`, `field-guide-update`) are cleaned and staged for
+  `promote`. One was the Evernote copy of `customer-account-intelligence`'s
+  original source, twice over, with nothing the canonical file lacks; its
+  `source-id:` is now on that file, so `ingest` skips it. The last three are
+  not reusable prompts and are deliberately not promoted.
+- **`ingest` has no way to decline a note.** A note you choose not to promote
+  is re-staged by every `ingest` of the same export, so the only way to be rid
+  of it is to delete the export once the import is finished.
 - **`init` never creates `private/env/_shared.env`.** Territory and roster
   values resolve from there, so they are set once and fill in automatically,
   but a fresh clone only gets the per-prompt files and has to repeat
