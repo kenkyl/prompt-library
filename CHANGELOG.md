@@ -20,6 +20,15 @@ run at the stage where a mistake is still private.
 - `promote`: the one door into `prompts/`/`references/`. It moves the file
   rather than copying it, never overwrites, and refuses a TODO description,
   a leftover omission marker, or anything the gate would block.
+- **The Evernote import.** Twelve notes became prompts, with every account,
+  person and territory name replaced by a variable, an argument, or a role.
+  Two one-off engagement prompts were rewritten as general templates.
+- **`customer-account-intelligence` is now a skill:** give it an account name
+  and it researches the account's entire history with the company, unless the
+  request narrows the scope, and returns a cited internal brief. The standing
+  Project instructions it grew from are unchanged in content, renamed
+  `customer-account-intelligence-project` to free the id. The values both use
+  (`COMPANY`, `PRODUCT_TERMS`, `SALES_METHODOLOGY`) moved to `_shared.env`.
 
 **Fixed**
 
@@ -52,20 +61,32 @@ run at the stage where a mistake is still private.
 
 **Known gaps**
 
-- **The Evernote import is not finished.** Of the 16 exported notes, nine
-  are promoted and three more (`stalled-contact-follow-ups`,
-  `sa-use-case-research`, `field-guide-update`) are cleaned and staged for
-  `promote`. One was the Evernote copy of `customer-account-intelligence`'s
-  original source, twice over, with nothing the canonical file lacks; its
-  `source-id:` is now on that file, so `ingest` skips it. The last three are
-  not reusable prompts and are deliberately not promoted.
+- **The two account-intelligence prompts share their research rules by
+  copy.** There is no include mechanism, and a bundled `reference:` cannot
+  carry the Project text: it is rendered on its own and fails on the
+  per-invocation `CUSTOMER_NAME`. Both files say so in their frontmatter;
+  keeping them in step is manual until an include exists.
+- **Skills that take an argument assume Claude Code.** A `from-arg` value
+  compiles to a placeholder (`$account`, `$product`) that only a Claude Code
+  invocation fills. Uploaded to the account catalog, where claude.ai chats and
+  scheduled tasks pass no argument, it would arrive empty or literal.
+  `customer-account-intelligence` falls back to the account named in the
+  conversation; the other eight do not yet, so reword them before giving any
+  of them `distribute: account`.
+- **`WALKTHROUGH.md`'s expected output predates the import.** Its commands
+  still run, but `list` now shows seventeen entries, not four, and `build`
+  reports different file counts.
+- Of the 16 exported notes, 12 are promoted. One was the Evernote copy of the
+  Project instructions' original source, twice over, with nothing the
+  canonical file lacks; its `source-id:` is on that file, so `ingest` skips it.
+  Three are not reusable prompts and are deliberately not promoted.
 - **`ingest` has no way to decline a note.** A note you choose not to promote
   is re-staged by every `ingest` of the same export, so the only way to be rid
   of it is to delete the export once the import is finished.
 - **`init` never creates `private/env/_shared.env`.** Territory and roster
   values resolve from there, so they are set once and fill in automatically,
   but a fresh clone only gets the per-prompt files and has to repeat
-  `TERRITORIES` and `SA_TEAM` in each. `init` should also generate
+  `TERRITORIES`, `SA_TEAM`, `COMPANY` and the rest in each. `init` should also generate
   `_shared.env`, listing every variable declared by two or more prompts.
 - The `cluster-kaas` pattern in `lib/patterns.py` names one customer's
   hostname prefix. The file is excluded from its own scan, so the gate cannot

@@ -70,7 +70,7 @@ installed before the plugin form landed — it tells you the `rm -rf` to run.
 ```
 id                             kind       status  surfaces                vars  installed
 -----------------------------  ---------  ------  ----------------------  ----  ---------
-customer-account-intelligence  prompt     ready   instructions,cli        6     -
+customer-account-intelligence-project  prompt     ready   instructions,cli        6     -
 sa-forecast-brief              prompt     ready   skill,instructions,cli  5     managed
 smoke-test                     prompt     ready   skill                   2     managed
 sa-forecast-job-spec           reference  ready   knowledge               8     -
@@ -245,9 +245,9 @@ variable.
 ```
 
 ```
-  skip  customer-account-intelligence:
+  skip  customer-account-intelligence-project:
           supplied per use: {{CUSTOMER_NAME}}
-          ./bin/prompt build customer-account-intelligence --var CUSTOMER_NAME='...'
+          ./bin/prompt build customer-account-intelligence-project --var CUSTOMER_NAME='...'
   wrote build/plugin/skills/sa-forecast-brief/SKILL.md
   wrote build/plugin/skills/sa-forecast-brief/references/sa-forecast-job-spec.md
   wrote build/instructions/sa-forecast-brief.md
@@ -283,32 +283,32 @@ build/plugin/skills/smoke-test/SKILL.md
 ### 2.2 Naming a skipped prompt is a hard error, not a skip
 
 ```bash
-./bin/prompt build customer-account-intelligence; echo "exit=$?"
+./bin/prompt build customer-account-intelligence-project; echo "exit=$?"
 ```
 
 Expect `exit=1` and a `FAIL` naming `{{CUSTOMER_NAME}}`, because you asked for
 that one specifically. Supply the value and it succeeds:
 
 ```bash
-./bin/prompt build customer-account-intelligence --var CUSTOMER_NAME="Northwind Airlines"
+./bin/prompt build customer-account-intelligence-project --var CUSTOMER_NAME="Northwind Airlines"
 ```
 
 ```
-  wrote build/instructions/customer-account-intelligence.md
-  wrote env/customer-account-intelligence.env.example
+  wrote build/instructions/customer-account-intelligence-project.md
+  wrote env/customer-account-intelligence-project.env.example
   wrote build/plugin/.claude-plugin/plugin.json
 build: 3 files
 ```
 
 ```bash
-head -6 build/instructions/customer-account-intelligence.md
+head -6 build/instructions/customer-account-intelligence-project.md
 ```
 
 The generated header names the source file and tells you not to edit the output.
 The `--var` value is baked into the body:
 
 ```bash
-grep -n "CUSTOMER_NAME:" build/instructions/customer-account-intelligence.md
+grep -n "CUSTOMER_NAME:" build/instructions/customer-account-intelligence-project.md
 ```
 
 Expect `- CUSTOMER_NAME: Northwind Airlines`.
@@ -468,7 +468,7 @@ as `/pl:<id>`.
 ```
 
 ```
-  skip  customer-account-intelligence: no skill surface (surfaces: instructions,cli). Its build/ output is for manual upload.
+  skip  customer-account-intelligence-project: no skill surface (surfaces: instructions,cli). Its build/ output is for manual upload.
   ok    sa-forecast-brief -> /Users/<you>/.claude/skills/pl/skills/sa-forecast-brief/SKILL.md (unchanged)
   ok    smoke-test -> /Users/<you>/.claude/skills/pl/skills/smoke-test/SKILL.md (unchanged)
   skip  sa-forecast-job-spec: no skill surface (surfaces: knowledge). Its build/ output is for manual upload.
@@ -642,7 +642,7 @@ artifact in the one shape the catalog accepts.
 ```
 
 ```
-  skip  customer-account-intelligence: no skill surface (surfaces: instructions,cli)
+  skip  customer-account-intelligence-project: no skill surface (surfaces: instructions,cli)
   ok    sa-forecast-brief -> build/upload/sa-forecast-brief.zip  (2 files, 15.7 KB)
           sa-forecast-brief/SKILL.md
           sa-forecast-brief/references/sa-forecast-job-spec.md
@@ -1084,11 +1084,11 @@ the repo cloneable.
 ```
 
 ```
-  skip  customer-account-intelligence:
+  skip  customer-account-intelligence-project:
           unset in the overlay: {{COMPANY}}, {{PRODUCT_TERMS}}, {{SALES_METHODOLOGY}}, {{METHODOLOGY_DELIVERABLES}}
-          fill private/env/customer-account-intelligence.env (see env/customer-account-intelligence.env.example)
+          fill private/env/customer-account-intelligence-project.env (see env/customer-account-intelligence-project.env.example)
           supplied per use: {{CUSTOMER_NAME}}
-          ./bin/prompt build customer-account-intelligence --var CUSTOMER_NAME='...'
+          ./bin/prompt build customer-account-intelligence-project --var CUSTOMER_NAME='...'
   skip  sa-forecast-brief:
           unset in the overlay: {{TERRITORIES}}, {{SA_TEAM}}, {{CRM_TOOL}}, {{EVIDENCE_SOURCES}}, {{MIN_CONSUMPTION_DELTA}}
           fill private/env/sa-forecast-brief.env (see env/sa-forecast-brief.env.example)
@@ -1116,7 +1116,7 @@ versus "supplied per use" (pass `--var`). They need different fixes.
 ```
 
 ```
-  made  private/env/customer-account-intelligence.env
+  made  private/env/customer-account-intelligence-project.env
   made  private/env/sa-forecast-brief.env
   made  private/env/sa-forecast-job-spec.env
   made  private/env/smoke-test.env
@@ -1184,7 +1184,7 @@ than something shipped through a marketplace.
 ```
 
 ```
-  keep  private/env/customer-account-intelligence.env (already exists)
+  keep  private/env/customer-account-intelligence-project.env (already exists)
   ...
 init: 0 created, 4 kept. Fill in the blanks, then ./bin/prompt check
 ```

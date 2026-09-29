@@ -311,17 +311,18 @@ dropped).
 
 ### Adding a price book, or any other company-specific reference
 
-`customer-account-intelligence` ships with an optional `PRICING_REFERENCE`
-variable as the worked example of this pattern. It is unset by default, so the
-prompt carries no commercial data at all until you opt in.
+`customer-account-intelligence-project` (the claude.ai Project instructions
+version) ships with an optional `PRICING_REFERENCE` variable as the worked
+example of this pattern. It is unset by default, so the prompt carries no
+commercial data at all until you opt in.
 
 To add one:
 
 1. Write your real figures to `private/fragments/pricing-reference.md` —
    gitignored, never committed.
-2. Uncomment the pointer in `private/env/customer-account-intelligence.env`:
+2. Uncomment the pointer in `private/env/customer-account-intelligence-project.env`:
    `PRICING_REFERENCE=@../fragments/pricing-reference.md`
-3. `./bin/prompt build customer-account-intelligence --var CUSTOMER_NAME="..."`
+3. `./bin/prompt build customer-account-intelligence-project --var CUSTOMER_NAME="..."`
 
 `env/fragments/pricing-reference.example.md` is the committed template showing
 the expected shape: list pricing and units, packaging and commit tiers,
