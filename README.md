@@ -232,6 +232,47 @@ clobber a local edit, and `promote` refuses to overwrite an existing canonical
 file. Once a prompt is here, this repo is the source of truth and the original
 is an archive.
 
+## Importing from Evernote
+
+```bash
+./bin/prompt ingest                    # inbox/enex/*.enex -> inbox/staged/<id>.md
+./bin/prompt promote <id>              # inbox/staged/<id>.md -> prompts/<id>.md
+```
+
+**Populate `private/denylist.txt` first.** The pattern families catch credentials,
+hostnames and CRM field names; they do not know which companies are your
+customers. Notes written during real engagements are full of account names, and
+with a stub denylist the gate is blind to all of them, during the one operation
+that most needs it.
+
+1. In Evernote, select the notes and use **File → Export Notes… → ENEX** into
+   `inbox/enex/`. Both `inbox/` and `*.enex` are gitignored, and the gate
+   blocks `*.enex` by name as well.
+2. `./bin/prompt ingest` converts each note to markdown with a draft
+   frontmatter, scans every staged file, and writes
+   `inbox/denylist-candidates.txt`: capitalised terms never seen in lowercase,
+   grouped by how likely each is to be a name. It is a heuristic. It narrows
+   the reading, and it misses names written in lowercase or inside URLs.
+3. Move the real names into `private/denylist.txt` and re-run `ingest`. That
+   rescans, and **keeps** any staged file you have already edited; `--force`
+   is the only way to discard one.
+4. Clean each staged note: replace names with variables, write the
+   `description:`, and deal with any `<!-- ingest: ... -->` marker. Those mark
+   an attachment or encrypted section that was not carried over. If the id
+   names an account, rename the file and its `id:` together. Re-ingesting
+   finds the renamed file by its `source-id:`, not by its name.
+5. `./bin/prompt promote <id>`. It **refuses** while the description says
+   TODO, while a marker remains, if the id is taken in `prompts/` or
+   `references/`, or if the gate would block the commit. It checks that
+   against the destination path, so a note is never promoted just to fail
+   its commit. It **moves** the file rather than copying it, because two live
+   copies is the drift this repo exists to end. `kind: reference` lands in
+   `references/`.
+
+A promoted file carries `source-id:`, a digest of the original note's title and
+date, so later ingests skip it even after its id and title have been rewritten.
+The digest keeps the title itself out of committed provenance.
+
 ## Variables
 
 The variable **contract** lives in the canonical file's frontmatter; `.env`
@@ -270,17 +311,18 @@ dropped).
 
 ### Adding a price book, or any other company-specific reference
 
-`customer-account-intelligence` ships with an optional `PRICING_REFERENCE`
-variable as the worked example of this pattern. It is unset by default, so the
-prompt carries no commercial data at all until you opt in.
+`customer-account-intelligence-project` (the claude.ai Project instructions
+version) ships with an optional `PRICING_REFERENCE` variable as the worked
+example of this pattern. It is unset by default, so the prompt carries no
+commercial data at all until you opt in.
 
 To add one:
 
 1. Write your real figures to `private/fragments/pricing-reference.md` —
    gitignored, never committed.
-2. Uncomment the pointer in `private/env/customer-account-intelligence.env`:
+2. Uncomment the pointer in `private/env/customer-account-intelligence-project.env`:
    `PRICING_REFERENCE=@../fragments/pricing-reference.md`
-3. `./bin/prompt build customer-account-intelligence --var CUSTOMER_NAME="..."`
+3. `./bin/prompt build customer-account-intelligence-project --var CUSTOMER_NAME="..."`
 
 `env/fragments/pricing-reference.example.md` is the committed template showing
 the expected shape: list pricing and units, packaging and commit tiers,
@@ -316,6 +358,14 @@ customers is itself confidential). `scan/allow.txt` can suppress a pattern
 family for a given path with a stated reason; it deliberately **cannot**
 suppress a denylist hit, since naming the term in a committed file would
 publish the thing the denylist exists to hide.
+
+Denylist matching is case-sensitive in content, which is what keeps it usable on
+prose; list each casing that occurs. A term is bounded by letters and digits, not
+by `_` or `-`, so it is found inside attachment names, and the space in a
+multi-word term also matches `_`, `-` or a line break. It is blind to filenames, though: a prompt id is lowercase, so a note named
+after an account would ship that name as the filename, the skill name and the slash
+command. Paths are therefore also matched against each denylist term as a
+lowercase-hyphenated slug.
 
 ## No dependencies, on purpose
 

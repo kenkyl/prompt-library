@@ -1,7 +1,7 @@
 <!-- EXAMPLE. This is the SHAPE the SALES_METHODOLOGY variable expects, not
      real content. Your company's actual methodology is internal IP: keep it in
      private/fragments/sales-methodology.md and point at it from
-     private/env/customer-account-intelligence.env with
+     private/env/_shared.env (both account-intelligence prompts use it) with
          SALES_METHODOLOGY=@../fragments/sales-methodology.md
      Substitute your own stages, gates, and vocabulary below. -->
 

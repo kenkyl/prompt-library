@@ -1,5 +1,103 @@
 # Changelog
 
+## Phase 4 — 2026-09-25
+
+The import path: Evernote export in, canonical prompt out, with the gate
+run at the stage where a mistake is still private.
+
+**Added**
+
+- `lib/adapters/enex.py`: stdlib `.enex`/ENML → markdown. It follows
+  Evernote's actual layout (one `<div>` per line, `<div><br/></div>` for a
+  blank line) rather than generic HTML, and handles code blocks, nested
+  lists, todos, tables and links. Attachments and encrypted sections leave an
+  `<!-- ingest: ... -->` marker.
+- `ingest`: stages each note into `inbox/staged/` with a draft frontmatter,
+  pre-declaring any `{{NAME}}` tokens the note already uses. It scans
+  everything it staged and writes `inbox/denylist-candidates.txt`. It never
+  overwrites a staged file you have edited, and it skips notes already
+  promoted.
+- `promote`: the one door into `prompts/`/`references/`. It moves the file
+  rather than copying it, never overwrites, and refuses a TODO description,
+  a leftover omission marker, or anything the gate would block.
+- **The Evernote import.** Twelve notes became prompts, with every account,
+  person and territory name replaced by a variable, an argument, or a role.
+  Two one-off engagement prompts were rewritten as general templates.
+- **`customer-account-intelligence` is now a skill:** give it an account name
+  and it researches the account's entire history with the company, unless the
+  request narrows the scope, and returns a cited internal brief. The standing
+  Project instructions it grew from are unchanged in content, renamed
+  `customer-account-intelligence-project` to free the id. The values both use
+  (`COMPANY`, `PRODUCT_TERMS`, `SALES_METHODOLOGY`) moved to `_shared.env`.
+
+**Fixed**
+
+- **Two customer account names reached the public repo, in Phase 2.** A
+  styling note in the forecast reference doc used real deal counts to explain
+  account chips, and the gate passed it because the denylist was still a stub.
+  Both `source.origin:` fields also carried the internal territory code. All
+  three lines were rewritten out of every commit and the branches
+  force-pushed; the populated denylist now blocks them. The old commits stay
+  reachable on GitHub through the merged PRs' refs until GitHub purges them.
+- **Denylist terms were missed when joined by underscores.** `\b` counts `_`
+  as a word character, so a term inside an attachment name like
+  `<account>_weekly_sync.pdf` never matched, and a multi-word term matched
+  only with a single space. Terms are now bounded by letters and digits, and
+  the space in a multi-word term also matches `_`, `-` or a line break.
+  Matching is still case-sensitive.
+- **The gate was blind to filenames.** Denylist matching is case-sensitive
+  and content-only, so a lowercase id containing an account name passed
+  every hook, and that id is also the skill name and slash command. Paths
+  are now matched against each term as a slug, in every scan mode.
+- Found while re-verifying before the real import, and fixed before it ran:
+  - Current Evernote wraps each list item's text in a `<div>` and writes
+    checklists as a styled `<ul>`. Every bullet came out as a bare `-` with
+    its text on the next line, and checkboxes were lost.
+  - `ingest` matched staged files to notes by filename. A renamed staged
+    file (which the path check forces whenever an id contains an account
+    name) was re-staged under its old name. Worse, a note whose slug matched
+    a hand-made staged file was taken to *be* that file, and `--force` would
+    have overwritten it. Staged files are now matched by `source-id`.
+
+**Known gaps**
+
+- **The two account-intelligence prompts share their research rules by
+  copy.** There is no include mechanism, and a bundled `reference:` cannot
+  carry the Project text: it is rendered on its own and fails on the
+  per-invocation `CUSTOMER_NAME`. Both files say so in their frontmatter;
+  keeping them in step is manual until an include exists.
+- **Skills that take an argument assume Claude Code.** A `from-arg` value
+  compiles to a placeholder (`$account`, `$product`) that only a Claude Code
+  invocation fills. Uploaded to the account catalog, where claude.ai chats and
+  scheduled tasks pass no argument, it would arrive empty or literal.
+  `customer-account-intelligence` falls back to the account named in the
+  conversation; the other eight do not yet, so reword them before giving any
+  of them `distribute: account`.
+- **`WALKTHROUGH.md`'s expected output predates the import.** Its commands
+  still run, but `list` now shows seventeen entries, not four, and `build`
+  reports different file counts.
+- Of the 16 exported notes, 12 are promoted. One was the Evernote copy of the
+  Project instructions' original source, twice over, with nothing the
+  canonical file lacks; its `source-id:` is on that file, so `ingest` skips it.
+  Three are not reusable prompts and are deliberately not promoted.
+- **`ingest` has no way to decline a note.** A note you choose not to promote
+  is re-staged by every `ingest` of the same export, so the only way to be rid
+  of it is to delete the export once the import is finished.
+- **`init` never creates `private/env/_shared.env`.** Territory and roster
+  values resolve from there, so they are set once and fill in automatically,
+  but a fresh clone only gets the per-prompt files and has to repeat
+  `TERRITORIES`, `SA_TEAM`, `COMPANY` and the rest in each. `init` should also generate
+  `_shared.env`, listing every variable declared by two or more prompts.
+- The `cluster-kaas` pattern in `lib/patterns.py` names one customer's
+  hostname prefix. The file is excluded from its own scan, so the gate cannot
+  see this. That prefix belongs in the denylist, which already has it.
+- Denylist matching is case-sensitive, so a customer name written in
+  lowercase in prose is not caught unless that casing is listed too, and some
+  names collide with English words in lowercase.
+- The candidate list is a heuristic. It misses a name written in lowercase,
+  inside a URL or hostname, or appearing only at a sentence start alongside
+  many ordinary verbs.
+
 ## Phase 3 — 2026-09-23
 
 Packaged as a plugin, and wrote down two things about Claude's surfaces that
