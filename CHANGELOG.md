@@ -73,6 +73,21 @@ run at the stage where a mistake is still private.
   `customer-account-intelligence` falls back to the account named in the
   conversation; the other eight do not yet, so reword them before giving any
   of them `distribute: account`.
+- **A multi-word argument passed without quotes arrives as its first word.**
+  In a live run, a two-word account name filled `$account` with only the first
+  word. The brief came out right only because the model read the full name
+  from the invocation. The quoted form is untested. Either document quoting or
+  make the argument take the whole string.
+- **Two skills name sources they don't carry.** Both account-intelligence
+  prompts tell the model to search an `Evernote Export/` folder in cloud
+  document storage, and no such folder exists. A live run looked for it, found
+  nothing, and fell back without saying where the notes really were.
+  `account-forecast-report` says "analyze the attached handover document" but
+  never declares that input, so with nothing attached the run has to search
+  for one, which is the failure CLAUDE.md warns about. Fix: name the real notes
+  location, or make it a `private:` overlay variable, and change both copies.
+  Declare the handover doc with `from-arg:`, or say what to do when none is
+  attached.
 - **`WALKTHROUGH.md`'s expected output predates the import.** Its commands
   still run, but `list` now shows seventeen entries, not four, and `build`
   reports different file counts.
