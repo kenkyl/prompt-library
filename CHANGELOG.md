@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0 — 2026-10-11
+
+**Added**
+
+- **`clear-check`, a skill (`/pl:clear-check`).** Run before `/clear` or when
+  wrapping up a session. It sweeps for unfinished work, findings that exist
+  only in the chat, and side effects `/clear` would detach (uncommitted
+  changes, background processes, scratch files), then writes or updates one
+  handoff file and reports a verdict with the user's own steps. It follows an
+  existing handoff convention in the repo if there is one, and otherwise
+  uses `.claude/handoff.md`. It never commits, pushes or deletes. No
+  variables, no overlay values, Claude Code only. `status: draft` until one
+  good live run.
+
 ## Phase 4 — 2026-09-25
 
 The import path: Evernote export in, canonical prompt out, with the gate
@@ -89,7 +103,7 @@ run at the stage where a mistake is still private.
   Declare the handover doc with `from-arg:`, or say what to do when none is
   attached.
 - **`WALKTHROUGH.md`'s expected output predates the import.** Its commands
-  still run, but `list` now shows seventeen entries, not four, and `build`
+  still run, but `list` now shows eighteen entries, not four, and `build`
   reports different file counts.
 - Of the 16 exported notes, 12 are promoted. One was the Evernote copy of the
   Project instructions' original source, twice over, with nothing the
