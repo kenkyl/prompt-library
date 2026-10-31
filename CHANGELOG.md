@@ -10,9 +10,13 @@
   changes, background processes, scratch files), then writes or updates one
   handoff file and reports a verdict with the user's own steps. It follows an
   existing handoff convention in the repo if there is one, and otherwise
-  uses `.claude/handoff.md`. It never commits, pushes or deletes. No
-  variables, no overlay values, Claude Code only. `status: draft` until one
-  good live run.
+  uses `.claude/handoff.md`, or a gitignored location when the repo is
+  public. Work another session left uncommitted is reported, but does not
+  hold the verdict. An existing handoff keeps its own headings, and the three
+  verdicts are defined. It never commits, pushes or deletes. No
+  variables, no overlay values, Claude Code only. `status: ready`: it has had
+  one live run, plus simulated runs of the dirty, clean, existing-handoff and
+  `CLAUDE.local.md` cases.
 
 ## Phase 4 — 2026-09-25
 
