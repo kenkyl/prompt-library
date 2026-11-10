@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+**Changed**
+
+- **The managed-cluster hostname pattern is generic.** `cluster-kaas`, which
+  named one customer's prefix inside a file the gate cannot scan, is now
+  `cluster-xaas`: any short `<x>aas-` prefix followed by a hostname-like
+  suffix of four or more characters, still blocking. Common industry terms
+  (SaaS, PaaS, IaaS, DBaaS, FaaS, CaaS, BaaS, DaaS, XaaS) are excluded, so prose
+  like "dbaas-based" is not blocked. A real hostname starting with one of them
+  is caught only by the denylist, which already holds the customer's prefix.
+
 ## 0.5.0 — 2026-10-11
 
 **Added**
@@ -121,9 +133,6 @@ run at the stage where a mistake is still private.
   but a fresh clone only gets the per-prompt files and has to repeat
   `TERRITORIES`, `SA_TEAM`, `COMPANY` and the rest in each. `init` should also generate
   `_shared.env`, listing every variable declared by two or more prompts.
-- The `cluster-kaas` pattern in `lib/patterns.py` names one customer's
-  hostname prefix. The file is excluded from its own scan, so the gate cannot
-  see this. That prefix belongs in the denylist, which already has it.
 - Denylist matching is case-sensitive, so a customer name written in
   lowercase in prose is not caught unless that casing is listed too, and some
   names collide with English words in lowercase.
