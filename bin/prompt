@@ -1027,11 +1027,91 @@ def cmd_env(argv):
     return 1 if unresolvable else 0
 
 
+def _shared_var_owners():
+    """{var name: first declaring id} for every var two or more artifacts
+    declare. Per-invocation (`from-arg`) vars are left out: a shared value
+    for one would be a fixed account name, which is exactly what they avoid.
+    """
+    count, owner, per_use = {}, {}, set()
+    for cid, _ in _canonical_paths():
+        meta, _, _ = _load(cid)
+        for v in E.declared_vars(meta):
+            n = v["name"]
+            count[n] = count.get(n, 0) + 1
+            owner.setdefault(n, cid)
+            if v.get("from-arg"):
+                per_use.add(n)
+    return {n: owner[n] for n, c in count.items() if c >= 2 and n not in per_use}
+
+
+_KEY_LINE = re.compile(r"^([A-Z][A-Z0-9_]*)=")
+
+
+def _env_blocks(text):
+    """Split a generated .env.example into (key or None, block text) pairs,
+    one per blank-line-separated block."""
+    out = []
+    for block in text.split("\n\n"):
+        key = None
+        for line in block.split("\n"):
+            m = _KEY_LINE.match(line)
+            if m:
+                key = m.group(1)
+        out.append((key, block))
+    return out
+
+
 def cmd_init(argv):
+    # Resolution is _shared.env, then <id>.env, later wins (lib/envfile.py).
+    # So a per-prompt copy must NOT carry a live line for a shared var: the
+    # example value (or a blank) in it would silently override _shared.env.
+    # Shared vars are commented out in the per-prompt copies and collected
+    # into _shared.env instead.
     src = os.path.join(ROOT, "env")
     dst = os.path.join(ROOT, "private", "env")
     os.makedirs(dst, exist_ok=True)
+    shared = _shared_var_owners()
     made = skipped = 0
+
+    def example_text(pid):
+        path = os.path.join(src, pid + ".env.example")
+        if not os.path.exists(path):
+            return ""
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+
+    shared_path = os.path.join(dst, "_shared.env")
+    if os.path.exists(shared_path):
+        have = set(E.parse_env(shared_path))
+        print("  keep  private/env/_shared.env (already exists)")
+        for n in sorted(set(shared) - have):
+            print("  note  private/env/_shared.env has no %s (declared by "
+                  "two or more prompts)" % n)
+        skipped += 1
+    elif shared:
+        parts = ["# Values shared by two or more prompts. Written by "
+                 "./bin/prompt init; yours to edit.",
+                 "# Each prompt's own private/env/<id>.env is applied "
+                 "after this file, so a live",
+                 "# line there for one of these keys overrides the value "
+                 "here.", ""]
+        for n in sorted(shared):
+            for key, block in _env_blocks(example_text(shared[n])):
+                if key == n:
+                    lines = block.split("\n")
+                    # Drop the per-prompt header if it leads the block.
+                    parts.append("\n".join(
+                        l for l in lines if not l.startswith("# GENERATED")
+                        and not l.startswith("# Edit the `vars:`")
+                        and not l.startswith("# Copy to private/env/")
+                        and l != "#"))
+                    parts.append("")
+                    break
+        with open(shared_path, "w", encoding="utf-8") as out:
+            out.write("\n".join(parts))
+        print("  made  private/env/_shared.env (%d shared vars)" % len(shared))
+        made += 1
+
     for fn in sorted(os.listdir(src)) if os.path.isdir(src) else []:
         if not fn.endswith(".env.example"):
             continue
@@ -1040,9 +1120,17 @@ def cmd_init(argv):
             print("  keep  private/env/%s (already exists)" % os.path.basename(target))
             skipped += 1
             continue
-        with open(os.path.join(src, fn), "r", encoding="utf-8") as fh, \
-                open(target, "w", encoding="utf-8") as out:
-            out.write(fh.read())
+        blocks = []
+        for key, block in _env_blocks(example_text(fn[:-len(".env.example")])):
+            if key in shared:
+                block = "\n".join(
+                    l if l.startswith("#") else "# " + l
+                    for l in block.split("\n"))
+                block += ("\n# Shared: set in _shared.env. Uncomment only "
+                          "to override it for this prompt.")
+            blocks.append(block)
+        with open(target, "w", encoding="utf-8") as out:
+            out.write("\n\n".join(blocks))
         print("  made  private/env/%s" % os.path.basename(target))
         made += 1
     print("\ninit: %d created, %d kept. Fill in the blanks, then "
