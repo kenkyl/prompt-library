@@ -76,8 +76,16 @@ PATTERNS: List[Pattern] = [
        "Remove it. Reference the record by variable."),
 
     # ---- infrastructure ----------------------------------------------------
-    _p("cluster-kaas", BLOCK,
-       r"\b(?:kaas|dcaas)-[a-z0-9-]{4,}\b",
+    # Generic "<x>aas-" managed-platform hostnames (kaas-prod1, kaas-prod-01).
+    # It deliberately names no customer's own prefix: those are denylist
+    # terms, and this file is excluded from its own scan, so a literal here
+    # would be published unseen. Common industry terms (SaaS, PaaS, IaaS,
+    # DBaaS, FaaS, CaaS, BaaS, DaaS, XaaS) are excluded so prose such as
+    # "dbaas-based" or "faas-runtime" is not blocked; a real hostname that
+    # starts with one of them relies on the denylist instead.
+    _p("cluster-xaas", BLOCK,
+       r"\b(?!(?:saas|paas|iaas|dbaas|faas|caas|baas|daas|xaas)-)"
+       r"[a-z]{1,4}aas-[a-z0-9][a-z0-9-]{3,}\b",
        "Managed-cluster hostname -- identifies a specific deployment.",
        "Replace with a variable such as {{CLUSTER_NAME}}."),
     _p("cluster-region-shape", REVIEW,
