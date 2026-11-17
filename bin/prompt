@@ -304,8 +304,10 @@ def cmd_check(argv):
     # House headings, matched loosely: numbered variants like "## 1. Role" and
     # "## 7. Output standards" are the same thing as "## Role" / "## Output
     # contract". Lifted from the existing corpus rather than imposed on it.
-    HOUSE = ((r"^#+\s*(?:\d+\.\s*)?Role\b", "Role section"),
-             (r"^(?:#+\s*(?:\d+\.\s*)?Output\b|FORMAT\b)", "Output section or FORMAT block"))
+    # A heading or an XML-style tag both count: imported prompts often use
+    # <role> and <output_format> instead of markdown sections.
+    HOUSE = ((r"^(?:#+\s*(?:\d+\.\s*)?Role\b|\s*<role\b)", "Role section"),
+             (r"^(?:#+\s*(?:\d+\.\s*)?Output\b|FORMAT\b|\s*<output)", "Output section or FORMAT block"))
 
     for pid in _ids_from(argv):
         meta, body, rel = _load(pid)
