@@ -2,15 +2,39 @@
 
 ## Unreleased
 
+No skill content changed, so the plugin stays at 0.5.0.
+
+**Added**
+
+- `fantasy-starting-lineup-request`: the original claude.ai request that
+  produced the `fantasy-starting-lineup` skill, kept as a record (`cli` only).
+  The skill itself is archived in the private skills repo, not here.
+
+**Fixed**
+
+- **`init` could silently override shared values.** Resolution applies
+  `private/env/_shared.env` first and `private/env/<id>.env` after it, and
+  `init` copied each example verbatim, example values and blank private
+  lines included. On a fresh clone, every prompt that declares `COMPANY`
+  would have built with the example company rather than the shared value.
+  `init` now creates `_shared.env` from every variable two or more prompts
+  declare (per-invocation `from-arg` variables excepted). It comments those
+  keys out of the per-prompt copies, and reports any shared key an existing
+  `_shared.env` lacks. Closes the Phase 4 gap.
+
 **Changed**
 
+- The house-style check accepts `<role>` and `<output…>` tags as well as
+  headings, which clears four false alarms on imported prompts. The
+  warnings left are prompts with neither.
 - **The managed-cluster hostname pattern is generic.** `cluster-kaas`, which
   named one customer's prefix inside a file the gate cannot scan, is now
   `cluster-xaas`: any short `<x>aas-` prefix followed by a hostname-like
   suffix of four or more characters, still blocking. Common industry terms
   (SaaS, PaaS, IaaS, DBaaS, FaaS, CaaS, BaaS, DaaS, XaaS) are excluded, so prose
   like "dbaas-based" is not blocked. A real hostname starting with one of them
-  is caught only by the denylist, which already holds the customer's prefix.
+  is caught only by the denylist, which holds the customer's prefixes in
+  every casing.
 
 ## 0.5.0 — 2026-10-11
 
@@ -128,11 +152,6 @@ run at the stage where a mistake is still private.
 - **`ingest` has no way to decline a note.** A note you choose not to promote
   is re-staged by every `ingest` of the same export, so the only way to be rid
   of it is to delete the export once the import is finished.
-- **`init` never creates `private/env/_shared.env`.** Territory and roster
-  values resolve from there, so they are set once and fill in automatically,
-  but a fresh clone only gets the per-prompt files and has to repeat
-  `TERRITORIES`, `SA_TEAM`, `COMPANY` and the rest in each. `init` should also generate
-  `_shared.env`, listing every variable declared by two or more prompts.
 - Denylist matching is case-sensitive, so a customer name written in
   lowercase in prose is not caught unless that casing is listed too, and some
   names collide with English words in lowercase.
